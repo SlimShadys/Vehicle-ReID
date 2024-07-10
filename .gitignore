@@ -1,0 +1,5 @@
+# Ignore the data path (30+ GB)
+data/*
+
+# Ignore python cache files
+__pycache__/*

@@ -1,0 +1,10 @@
+{
+    "model": "resnet50",
+    "pretrained": true,
+    "device": "cuda",
+    "epochs": 10,
+    "batch_size": 32,
+    "learning_rate": 0.001,
+    "dataset_name": "veri-776",
+    "data_path": "data"
+}
