@@ -1,10 +1,10 @@
 import torch
 
 class Trainer:
-    def __init__(self, model, loaders, epochs, batch_size, learning_rate, device='cuda'):
+    def __init__(self, model, dataloaders, epochs, batch_size, learning_rate, device='cuda'):
         self.model = model
-        self.train_loader = loaders['train']
-        self.test_loader = loaders['val']
+        self.train_loader = dataloaders['train']
+        self.test_loader = dataloaders['val']
         self.epochs = epochs
         self.batch_size = batch_size
         self.learning_rate = learning_rate
