@@ -1,5 +1,9 @@
 # Ignore the data path (30+ GB)
 data/*
 
+# Ignore tracking example video and YoloV5 model
+tracking/video/*
+yolov5n.pt
+
 # Ignore python cache files
 __pycache__/*
