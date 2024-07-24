@@ -1,29 +1,41 @@
 import matplotlib.pyplot as plt
 from dataset import DatasetBuilder
 from model import ModelBuilder
+from loss import LossBuilder
 from torch.utils.data import DataLoader
 from training import *
 from utils import *
 
-def main(config_path):
-    # Load configuration from JSON file
-    config = load_config(config_path)
+import yaml
+
+def main(config):
 
     # ============= VARIABLES =============
-    # Global variables
-    data_path = config['data_path']
-    dataset_name = config['dataset_name']
-    dataset_size = config['dataset_size']
+    dataset_config = config['dataset']
+    model_config = config['model']
+    training_config = config['training']
+    loss_config = config['loss']
+
+    # Dataset variables
+    data_path = dataset_config['data_path']
+    dataset_name = dataset_config['dataset_name']
+    dataset_size = dataset_config['dataset_size']
 
     # Model parameters
-    device = config['device']
-    model = config['model']
-    pretrained = config['pretrained']
+    device = model_config['device']
+    model = model_config['model']
+    pretrained = model_config['pretrained']
     
     # Training parameters
-    batch_size = config['batch_size']
-    epochs = config['epochs']
-    learning_rate = config['learning_rate']
+    batch_size = training_config['batch_size']
+    epochs = training_config['epochs']
+    learning_rate = training_config['learning_rate']
+
+    # Loss parameters
+    alpha = loss_config['alpha']
+    k = loss_config['k']
+    margin = loss_config['margin']
+    label_smoothing = loss_config['label_smoothing']
     # =====================================
 
     # Number of classes in each dataset (Only for ID classification tasks, hence only training set is considered)
@@ -47,22 +59,22 @@ def main(config_path):
     print(f"Unique classes: {dataset_builder.dataset.get_unique_car_ids()}")
 
     # Create the DataLoaders
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=train_dataset.train_collate_fn, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
 
-    # Get a simple batch from train loader and print the image
-    print("\nVisualizing a batch of images...")
-    img_path, img, car_id, cam_id, model_id, color_id, type_id, timestamp = next(iter(train_loader))
+    # # Get a simple batch from train loader and print the image
+    # print("\nVisualizing a batch of images...")
+    # img_path, img, car_id, cam_id, model_id, color_id, type_id, timestamp = next(iter(train_loader))
 
-    # Convert to numpy and transpose dimensions
-    img_np = img[0].permute(1, 2, 0).numpy()  # Shape: [320, 320, 3]
+    # # Convert to numpy and transpose dimensions
+    # img_np = img[0].permute(1, 2, 0).numpy()  # Shape: [320, 320, 3]
     
-    # Display the image
-    plt.figure(figsize=(8, 8))
-    plt.title(f"CarID: {car_id[0].item()}, CamID: {cam_id[0].item()} | Timestamp: {timestamp[0]}")
-    plt.imshow(img_np)
-    plt.axis('off') # Hide axes
-    plt.show()
+    # # Display the image
+    # plt.figure(figsize=(8, 8))
+    # plt.title(f"CarID: {car_id[0].item()}, CamID: {cam_id[0].item()} | Timestamp: {timestamp[0]}")
+    # plt.imshow(img_np)
+    # plt.axis('off') # Hide axes
+    # plt.show()
 
     print("--------------------")
     print(f"Building {model} model...")
@@ -87,10 +99,14 @@ def main(config_path):
     print(f"\t- Trainable parameters: {model_builder.get_number_trainable_parameters():,}")
     print("--------------------")
 
+    # Define the loss function
+    loss_fn = LossBuilder(alpha=alpha, k=k, margin=margin, label_smoothing=label_smoothing, num_classes=num_classes[dataset_name])
+
     # Create the Trainer
     trainer = Trainer(
         model=model,
         dataloaders={'train': train_loader, 'val': val_loader},
+        loss_fn=loss_fn,
         epochs=epochs,
         batch_size=batch_size,
         learning_rate=learning_rate,
@@ -105,6 +121,8 @@ if __name__ == '__main__':
     #     sys.exit(1)
     # main(sys.argv[1])
 
-    config_file = 'config.json'
+    # Parameters from config.yml file
+    with open('config.yml', 'r') as f:
+        config = yaml.load(f, yaml.FullLoader)['reid']
 
-    main(config_file)
+    main(config)

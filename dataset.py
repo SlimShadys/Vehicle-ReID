@@ -57,8 +57,8 @@ class Veri776():
 
         # Specific transforms for Veri-776
         self.train_transform = transforms.Compose([
-            transforms.Resize((320, 320)),          # Resize to 320x320
-            transforms.RandomCrop((320, 320)),      # Random crop to 320x320
+            transforms.Resize((384, 384)),          # Resize to 384x384
+            transforms.RandomCrop((384, 384)),      # Random crop to 384x384
             transforms.RandomHorizontalFlip(p=0.5), # Random horizontal flip
             transforms.Pad(10),                     # Pad the image with 10 pixels
             transforms.ToTensor(),                  # Convert to tensor
@@ -66,7 +66,7 @@ class Veri776():
 
         # Specific transforms for Veri-776
         self.val_transform = transforms.Compose([
-            transforms.Resize((320, 320)),          # Resize to 320x320
+            transforms.Resize((384, 384)),          # Resize to 384x384
             transforms.ToTensor(),                  # Convert to tensor
         ])
 
@@ -155,7 +155,24 @@ class Veri776():
 
             dataset.append(details)
 
+        # Relabel the train set only
+        if 'train' in dir_path:
+            dataset = self.relabel_ids(dataset)
+
         return dataset
+
+    def relabel_ids(self, dataset):
+        all_pids = {}
+        relabeled_dataset = []
+        for item in dataset:
+            img_path, vehicle_id, camera_id, model_id, color_id, type_id, timestamp = item
+
+            if vehicle_id not in all_pids:
+                all_pids[vehicle_id] = len(all_pids)
+
+            new_id = all_pids[vehicle_id]
+            relabeled_dataset.append((img_path, new_id, camera_id, model_id, color_id, type_id, timestamp))
+        return relabeled_dataset
 
     def retrieve_details(self, img_path):
         # We need to extract the infos manually from the image name
@@ -455,9 +472,14 @@ class ImageDataset(Dataset):
         # Apply the transform if it exists
         if self.transform is not None:
             img = self.transform(img)
-        
-        # Maybe applying a possible collate_fn here would be a good idea
-        car_id = torch.tensor(car_id, dtype=torch.int64)
 
         return img_path, img, car_id, cam_id, model_id, color_id, type_id, timestamp
 
+    def train_collate_fn(self, batch):
+        img_paths, imgs, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps = zip(*batch)
+
+        # Transform Car IDs and Images to Tensors
+        car_ids = torch.tensor(car_ids, dtype=torch.int64)  # [batch_size]
+        imgs = torch.stack(imgs, dim=0)                     # [batch_size, 3, 320, 320]
+
+        return img_paths, imgs, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps

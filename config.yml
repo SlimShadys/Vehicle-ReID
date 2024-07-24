@@ -1,0 +1,21 @@
+reid: 
+  dataset:
+    data_path: "data"
+    dataset_name: "veri-776"
+    dataset_size: "small"
+
+  model:
+    model: "resnet50"
+    pretrained: true,
+    device: "cuda"
+
+  training:
+    epochs: 10
+    batch_size: 32
+    learning_rate: 3.5e-4
+    
+  loss:
+    alpha: 0.9
+    k: 10
+    margin: 0.3
+    label_smoothing: 0.1

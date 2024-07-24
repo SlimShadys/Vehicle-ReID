@@ -39,14 +39,14 @@ class YOLOv5():
         return self.classes[int(x)]
         
     def extract_detections(self, results, frame, height, width):
-        labels, bb_cordinates = results  # Extract labels and bounding box coordinates
+        labels, bb_coordinates = results  # Extract labels and bounding box coordinates
         detections = []         # Empty list to store the detections later 
         class_count = 0         # Initialize class count for the frame 
         num_objects = len(labels)   #extract the number of objects detected
         x_shape, y_shape = width, height
 
         for object_index in range(num_objects):
-            row = bb_cordinates[object_index]
+            row = bb_coordinates[object_index]
             conf_val = float(row[4].item()).__round__(2)
 
             if conf_val >= self.confidence_threshold:
