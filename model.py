@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torchvision.models as models
-from utils import GeM
+from utils import GeM, weights_init_kaiming, weights_init_classifier
 
 class CustomResNet(torch.nn.Module):
     def __init__(self, model, num_classes):
@@ -10,8 +10,8 @@ class CustomResNet(torch.nn.Module):
         # Extract the FC layer input shape
         self.fc_input_shape = model.fc.in_features
 
-        # Everything except the last linear layer
-        self.extractor = torch.nn.Sequential(*list(model.children())[:-1])
+        # Everything except the last linear layer and AdaptiveAvgPool2d
+        self.extractor = torch.nn.Sequential(*list(model.children())[:-2])
 
         # Generalized Mean Pooling layer
         self.gem = GeM()
@@ -19,32 +19,26 @@ class CustomResNet(torch.nn.Module):
         # Bottleneck layer
         self.bottleneck = nn.BatchNorm1d(self.fc_input_shape) # 2048 for ResNet-50
         self.bottleneck.bias.requires_grad_(False)
+        self.bottleneck.apply(weights_init_kaiming)
 
-        # The last 2 linear layers
-        self.fc1 = torch.nn.Linear(self.fc_input_shape, self.fc_input_shape, bias=False)
-        self.fc2 = torch.nn.Linear(self.fc_input_shape, num_classes, bias=False)
-
-        # Initialize the weights with a normal distribution
-        nn.init.normal_(self.fc1.weight) 
-        nn.init.normal_(self.fc2.weight)
+        # The last Linear layer
+        self.fc1 = torch.nn.Linear(self.fc_input_shape, num_classes, bias=False)
+        self.fc1.apply(weights_init_classifier)
 
         # Flatten layer
         self.flatten = torch.nn.Flatten()
-        self.relu = torch.nn.ReLU()
 
     # x: Should be a Tensor of size [batch_size, in_channels, height, width]
-    def forward(self, x: torch.Tensor, training: bool = False):
-        embeddings = self.extractor(x) # Up to the last layer before the FC layer | [batch_size, 2048, 1, 1]
+    def forward(self, x: torch.Tensor, training: bool = False):       
+        embeddings = self.extractor(x) # [batch_size, 2048, 1, 1] | Up to the last Conv Layer of the last Block
 
-        embeddings_gem = self.gem(embeddings)            # [batch_size, 2048, 1, 1]
+        embeddings_gem = self.gem(embeddings)            # [batch_size, 2048, 1, 1] | Apply GeM pooling 
         embeddings_gem = self.flatten(embeddings_gem)    # [batch_size, 2048]
 
         features = self.bottleneck(embeddings_gem)       # Bottleneck layer | [batch_size, 2048]
         
         if training:
-            classifications = self.fc1(features)         # [batch_size, 2048]
-            classifications = self.relu(classifications) # [batch_size, 2048]
-            classifications = self.fc2(classifications)  # [batch_size, num_classes]
+            classifications = self.fc1(features)         # [batch_size, num_classes]
             return embeddings_gem, classifications
         else:
             return features

@@ -31,7 +31,7 @@ class DatasetBuilder():
             raise ValueError(f"Unknown dataset: {self.dataset_name}")
         
         self.train_set = ImageDataset(self.dataset.train, transform=self.dataset.train_transform)
-        self.validation_set = ImageDataset(self.dataset.gallery + self.dataset.query, transform=self.dataset.val_transform)
+        self.validation_set = ImageDataset(self.dataset.query + self.dataset.gallery, transform=self.dataset.val_transform)
 
 class Veri776():
     def __init__(self, data_path):
@@ -479,7 +479,18 @@ class ImageDataset(Dataset):
         img_paths, imgs, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps = zip(*batch)
 
         # Transform Car IDs and Images to Tensors
-        car_ids = torch.tensor(car_ids, dtype=torch.int64)  # [batch_size]
         imgs = torch.stack(imgs, dim=0)                     # [batch_size, 3, 320, 320]
+        car_ids = torch.tensor(car_ids, dtype=torch.int64)  # [batch_size]
+        cam_ids = torch.tensor(cam_ids, dtype=torch.int64)
+
+        return img_paths, imgs, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps
+    
+    def val_collate_fn(self, batch):
+        img_paths, imgs, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps = zip(*batch)
+
+        # Transform Car IDs and Images to Tensors
+        imgs = torch.stack(imgs, dim=0)                     # [batch_size, 3, 320, 320]
+        car_ids = torch.tensor(car_ids, dtype=torch.int64)  # [batch_size]
+        cam_ids = torch.tensor(cam_ids, dtype=torch.int64)
 
         return img_paths, imgs, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps

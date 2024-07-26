@@ -1,9 +1,7 @@
-import json
 import os
 from PIL import Image
 import torch
 import torch.nn.functional as F
-import numpy as np
 import torch.nn as nn
 from torch.nn.parameter import Parameter
 
@@ -41,3 +39,40 @@ class GeM(nn.Module):
                 x.clamp(min=self.eps).pow(self.p), # Input
                                             (1, 1) # Output size
                 ).pow(1./self.p)
+        
+def weights_init_kaiming(m):
+    classname = m.__class__.__name__
+    if classname.find('Linear') != -1:
+        nn.init.kaiming_normal_(m.weight, a=0, mode='fan_out')
+        nn.init.constant_(m.bias, 0.0)
+    elif classname.find('Conv') != -1:
+        nn.init.kaiming_normal_(m.weight, a=0, mode='fan_in')
+        if m.bias is not None:
+            nn.init.constant_(m.bias, 0.0)
+    elif classname.find('BatchNorm') != -1:
+        if m.affine:
+            nn.init.constant_(m.weight, 1.0)
+            nn.init.constant_(m.bias, 0.0)
+            
+def weights_init_classifier(m):
+    classname = m.__class__.__name__
+    if classname.find('Linear') != -1:
+        nn.init.normal_(m.weight, std=0.001)
+        if m.bias:
+            nn.init.constant_(m.bias, 0.0)
+            
+def euclidean_dist(x, y):
+    """
+    Args:
+      x: pytorch Variable, with shape [m, d]
+      y: pytorch Variable, with shape [n, d]
+    Returns:
+      dist: pytorch Variable, with shape [m, n]
+    """
+    m, n = x.size(0), y.size(0)
+    xx = torch.pow(x, 2).sum(1, keepdim=True).expand(m, n)
+    yy = torch.pow(y, 2).sum(1, keepdim=True).expand(n, m).t()
+    dist = xx + yy
+    dist.addmm_(x, y.t(), beta=1, alpha=-2) # dist.addmm_(1, -2, x, y.t()) -> Original line
+    dist = dist.clamp(min=1e-12).sqrt()  # for numerical stability
+    return dist

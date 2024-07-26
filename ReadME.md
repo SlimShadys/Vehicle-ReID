@@ -1,5 +1,9 @@
 # Vehicle Re-Identification
 
+## Install proper libraries
+In order to install the proper libraries, a `requirements.txt` file, is present.
+Simply run `pip install -r requirements.txt`.
+
 ## Configuration
 The project starts by properly filling the `config.json` file:
 - `data_path`: The data path of the Dataset (e.g. `"data"`)

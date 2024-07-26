@@ -10,12 +10,16 @@ reid:
     device: "cuda"
 
   training:
-    epochs: 10
+    epochs: 100
     batch_size: 32
     learning_rate: 3.5e-4
-    
+  
+  validation:
+    batch_size: 32
+    val_interval: 5
+
   loss:
     alpha: 0.9
-    k: 10
+    k: 500
     margin: 0.3
     label_smoothing: 0.1

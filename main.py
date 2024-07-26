@@ -14,6 +14,7 @@ def main(config):
     dataset_config = config['dataset']
     model_config = config['model']
     training_config = config['training']
+    val_config = config['validation']
     loss_config = config['loss']
 
     # Dataset variables
@@ -30,6 +31,10 @@ def main(config):
     batch_size = training_config['batch_size']
     epochs = training_config['epochs']
     learning_rate = training_config['learning_rate']
+    
+    # Validation parameters
+    batch_size_val = val_config['batch_size']
+    val_interval = val_config['val_interval']
 
     # Loss parameters
     alpha = loss_config['alpha']
@@ -60,7 +65,7 @@ def main(config):
 
     # Create the DataLoaders
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=train_dataset.train_collate_fn, num_workers=0)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=False, collate_fn=val_dataset.val_collate_fn, num_workers=0)
 
     # # Get a simple batch from train loader and print the image
     # print("\nVisualizing a batch of images...")
@@ -105,14 +110,15 @@ def main(config):
     # Create the Trainer
     trainer = Trainer(
         model=model,
-        dataloaders={'train': train_loader, 'val': val_loader},
+        val_interval=val_interval,
+        dataloaders={'train': train_loader, 'val': {val_loader, len(dataset_builder.dataset.query)}},
         loss_fn=loss_fn,
         epochs=epochs,
         batch_size=batch_size,
         learning_rate=learning_rate,
         device=device
     )
-    trainer.train()
+    trainer.run()
 
 if __name__ == '__main__':
     # import sys

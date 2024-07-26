@@ -28,7 +28,7 @@ class LossBuilder(nn.Module):
             self.alpha = alpha
             self.k = k
             self.ratio_ID = 1.0
-            self.ratio_metric = 0.7
+            self.ratio_metric = 1.0
 
             self.ID_losses = []
             self.metric_losses = []
@@ -61,7 +61,7 @@ class LossBuilder(nn.Module):
                 self.metric_losses.clear()
 
                 if ID_std > metric_std:
-                    self.ratio_ID = self.alpha * self.ratio_ID + (1 - (ID_std - metric_std) / ID_std)
+                    self.ratio_ID = (self.alpha * self.ratio_ID) + ((1 - (ID_std - metric_std) / ID_std) * 0.1)
             else:
                 pass # Keep the previous ratio
                 
