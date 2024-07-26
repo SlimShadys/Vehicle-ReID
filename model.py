@@ -4,17 +4,25 @@ import torchvision.models as models
 from utils import GeM, weights_init_kaiming, weights_init_classifier
 
 class CustomResNet(torch.nn.Module):
-    def __init__(self, model, num_classes):
+    def __init__(self, model: torch.nn.Module, num_classes):
         super(CustomResNet, self).__init__()
 
         # Extract the FC layer input shape
         self.fc_input_shape = model.fc.in_features
 
+        # Modify the stride of the last bottleneck block's second conv layer to 1
+        model.layer4[0].conv2.stride = (1, 1)
+        
+        # Remove the downsample layer from the last bottleneck block in layer4
+        # Do not set it to None, but remove it completely to avoid any errors
+        model.layer4[0] = nn.Sequential(*list(model.layer4[0].children())[:-1])
+        
         # Everything except the last linear layer and AdaptiveAvgPool2d
         self.extractor = torch.nn.Sequential(*list(model.children())[:-2])
 
         # Generalized Mean Pooling layer
-        self.gem = GeM()
+        #self.gem = GeM()
+        self.gem = nn.AdaptiveAvgPool2d(1)
 
         # Bottleneck layer
         self.bottleneck = nn.BatchNorm1d(self.fc_input_shape) # 2048 for ResNet-50
@@ -25,15 +33,12 @@ class CustomResNet(torch.nn.Module):
         self.fc1 = torch.nn.Linear(self.fc_input_shape, num_classes, bias=False)
         self.fc1.apply(weights_init_classifier)
 
-        # Flatten layer
-        self.flatten = torch.nn.Flatten()
-
     # x: Should be a Tensor of size [batch_size, in_channels, height, width]
     def forward(self, x: torch.Tensor, training: bool = False):       
         embeddings = self.extractor(x) # [batch_size, 2048, 1, 1] | Up to the last Conv Layer of the last Block
 
         embeddings_gem = self.gem(embeddings)            # [batch_size, 2048, 1, 1] | Apply GeM pooling 
-        embeddings_gem = self.flatten(embeddings_gem)    # [batch_size, 2048]
+        embeddings_gem = embeddings_gem.view(embeddings_gem.shape[0], -1)    # [batch_size, 2048]
 
         features = self.bottleneck(embeddings_gem)       # Bottleneck layer | [batch_size, 2048]
         

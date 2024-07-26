@@ -1,43 +1,51 @@
 import cv2
 import time
-import torch
 import yaml
 
-from detector import YOLOv5
-from tracker import DeepSortTracker
+from ultralytics import YOLO
 
 # Parameters from config.yml file
 with open('tracking/config.yml', 'r') as f:
-    config = yaml.load(f, yaml.FullLoader)['yolov5_deepsort']
+    config = yaml.load(f, yaml.FullLoader)['yolov8']
 
 # Visualization Parameters
 DISP_INFOS = config['main']['disp_infos']
+SAVE_VIDEO = config['main']['save_video']
 
-# CUDA for PyTorch
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-# Initialize the YOLOv5 object detector and DeepSORT deepsort_tracker
-yolo_detector = YOLOv5(config, device=device)
-deepsort = DeepSortTracker(config)
+# YOLOv8 Parameters
+yolo_name = config['detector']['yolo_name']
+tracked_classes = config['detector']['tracked_class']
+conf_thresh = config['detector']['confidence_threshold'] # Set the confidence threshold
+model = YOLO(yolo_name + '.pt') # Load the YOLOv8 model
 
 # Load the video file
 cap = cv2.VideoCapture(R"{}".format(config['main']['video_path']))
 
-track_history = {}    # Define a empty dictionary to store the previous center locations for each track ID
+if(SAVE_VIDEO):
+    # Get the width and height of the video frame
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    # Define the codec and create a VideoWriter object to save the video
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter('output.mp4', fourcc, 20.0, (frame_width, frame_height))
 
+# Run the tracking loop
 while cap.isOpened():
 
-    success, img = cap.read() # Read the image frame from data source 
- 
-    start_time = time.perf_counter() # Start Timer - needed to calculate FPS
-    
-    # Object Detection
-    results = yolo_detector.run(img)  # Run the YOLOv5 object detector 
-    detections, num_objects = yolo_detector.extract_detections(results, img, height=img.shape[0], width=img.shape[1]) # Plot the bounding boxes and extract detections (needed for DeepSORT) and number of relavent objects detected
+    # Read the image frame from data source
+    success, img = cap.read()
+    if not success: break
 
-    # Object Tracking
-    tracks_current = deepsort.object_tracker.update_tracks(detections, frame=img)
-    deepsort.display_track(track_history, tracks_current, img)
+    start_time = time.perf_counter() # Start Timer - needed to calculate FPS
+
+    # Run YOLOv8 tracking on the frame, persisting tracks between frames
+    results = model.track(img, classes=list(tracked_classes.keys()), conf=conf_thresh, persist=True)
+    
+    # for r in results:
+    #     print(r.boxes.id)  # print tracking IDs
+
+    # Visualize the results on the frame
+    annotated_frame = results[0].plot()
     
     # FPS Calculation
     end_time = time.perf_counter()
@@ -46,15 +54,18 @@ while cap.isOpened():
 
     # Descriptions on the output visualization
     if DISP_INFOS:
-        cv2.putText(img, f'FPS: {int(fps)}', (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-        cv2.putText(img, f'DETECTED OBJECTS: {num_objects}', (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-        cv2.putText(img, f'TRACKED CLASS: {yolo_detector.tracked_class}', (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-    
-    cv2.imshow('img', img)
+        cv2.putText(annotated_frame, f'FPS: {int(fps)}', (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+        cv2.putText(annotated_frame, f'DETECTED OBJECTS: {len(results[0].boxes.cls)}', (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+        cv2.putText(annotated_frame, f'TRACKED CLASS: {list(tracked_classes.values())}', (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
-    if cv2.waitKey(1) & 0xFF == 27:
-        break
+    # Write the frame with bounding boxes to the video file if SAVE_VIDEO is True
+    if SAVE_VIDEO: out.write(annotated_frame)
+    
+    cv2.imshow("YOLOv8 Tracking", annotated_frame)
+
+    if cv2.waitKey(1) & 0xFF == 27: break
 
 # Release and destroy all windows before termination
 cap.release()
+if SAVE_VIDEO: out.release()
 cv2.destroyAllWindows()

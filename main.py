@@ -5,6 +5,7 @@ from loss import LossBuilder
 from torch.utils.data import DataLoader
 from training import *
 from utils import *
+from dataset import RandomIdentitySampler
 
 import yaml
 
@@ -41,7 +42,25 @@ def main(config):
     k = loss_config['k']
     margin = loss_config['margin']
     label_smoothing = loss_config['label_smoothing']
+    apply_MALW = loss_config['apply_MALW']
     # =====================================
+
+    if(torch.cuda.is_available()):
+        print('Cuda available: {}'.format(torch.cuda.is_available()))
+        if (torch.cuda.device_count() > 1):
+            print(f"Detected multiple GPUs. Devices: {torch.cuda.device_count()}")
+            print("Using the first GPU available...")
+        device = torch.device("cuda:0")
+        
+        print("GPU: " + torch.cuda.get_device_name(device))
+        print("Total memory: {:.1f} GB".format((float(torch.cuda.get_device_properties(device).total_memory / (1024 ** 3)))))
+    else:
+        device = torch.device("cpu")
+        print('Cuda not available, so using CPU. Please consider switching to a GPU runtime before running the notebook!')
+        
+    print("===================================================")
+    print(F"Torch version: {torch.__version__}")
+    print("===================================================")
 
     # Number of classes in each dataset (Only for ID classification tasks, hence only training set is considered)
     num_classes = {
@@ -64,7 +83,8 @@ def main(config):
     print(f"Unique classes: {dataset_builder.dataset.get_unique_car_ids()}")
 
     # Create the DataLoaders
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=train_dataset.train_collate_fn, num_workers=0)
+    sampler = RandomIdentitySampler(train_dataset, batch_size=batch_size, num_instances=8)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=sampler, collate_fn=train_dataset.train_collate_fn, num_workers=0)
     val_loader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=False, collate_fn=val_dataset.val_collate_fn, num_workers=0)
 
     # # Get a simple batch from train loader and print the image
@@ -105,7 +125,7 @@ def main(config):
     print("--------------------")
 
     # Define the loss function
-    loss_fn = LossBuilder(alpha=alpha, k=k, margin=margin, label_smoothing=label_smoothing, num_classes=num_classes[dataset_name])
+    loss_fn = LossBuilder(alpha=alpha, k=k, margin=margin, label_smoothing=label_smoothing, apply_MALW=apply_MALW, num_classes=num_classes[dataset_name])
 
     # Create the Trainer
     trainer = Trainer(
@@ -114,7 +134,6 @@ def main(config):
         dataloaders={'train': train_loader, 'val': {val_loader, len(dataset_builder.dataset.query)}},
         loss_fn=loss_fn,
         epochs=epochs,
-        batch_size=batch_size,
         learning_rate=learning_rate,
         device=device
     )

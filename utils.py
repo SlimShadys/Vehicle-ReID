@@ -76,3 +76,13 @@ def euclidean_dist(x, y):
     dist.addmm_(x, y.t(), beta=1, alpha=-2) # dist.addmm_(1, -2, x, y.t()) -> Original line
     dist = dist.clamp(min=1e-12).sqrt()  # for numerical stability
     return dist
+
+def normalize(x, axis=-1):
+    """Normalizing to unit length along the specified dimension.
+    Args:
+      x: pytorch Variable
+    Returns:
+      x: pytorch Variable, same shape as input
+    """
+    x = 1. * x / (torch.norm(x, 2, axis, keepdim=True).expand_as(x) + 1e-12)
+    return x

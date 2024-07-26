@@ -3,9 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from pytorch_metric_learning import losses, miners, distances
+from utils import euclidean_dist, normalize
 
 class LossBuilder(nn.Module):
-    def __init__(self, alpha=0.9, k=10, margin=0.3, label_smoothing=0.1, num_classes=1000, **kwargs):
+    def __init__(self, alpha=0.9, k=10, margin=0.3, label_smoothing=0.1, apply_MALW=False, num_classes=1000, **kwargs):
         super(LossBuilder, self).__init__()
         
         self.num_classes = num_classes
@@ -13,21 +14,28 @@ class LossBuilder(nn.Module):
         self.margin = margin  # Margin for contrastive loss
 
         # ID Loss -> Cross Entropy Loss
-        #self.cross_entropy = nn.CrossEntropyLoss()
+        # self.cross_entropy = nn.CrossEntropyLoss()
         self.cross_entropy = CrossEntropyLabelSmooth(num_classes=self.num_classes, epsilon=label_smoothing, use_gpu=True)
 
         # Metric Loss -> Supervised Contrastive Loss / Contrastive Loss
-        self.distance = distances.CosineSimilarity()
-        self.miner = miners.TripletMarginMiner(margin=self.margin, distance=self.distance, type_of_triplets="semihard")
-        self.supconloss = losses.SupConLoss()
-        #self.triplet_loss = ContrastiveLoss(self.margin) # ContrastiveLoss(self.margin) / SupConLoss()
-
-        self.apply_MALW = True
+        # self.distance = distances.CosineSimilarity()
+        # self.miner = miners.TripletMarginMiner(margin=self.margin, distance=self.distance, type_of_triplets="semihard")
+        # self.triplet_loss = losses.SupConLoss()
+        
+        # Metric Loss -> Supervised Contrastive Loss / Contrastive Loss V2
+        # self.distance = distances.LpDistance()
+        # self.miner = miners.BatchHardMiner(distance=self.distance)
+        # self.triplet_loss = losses.TripletMarginLoss(margin=self.margin)
+        
+        # TO BE TESTED
+        self.triplet_loss = TripletLoss(self.margin)
+                
+        self.apply_MALW = apply_MALW
 
         if(self.apply_MALW):
             self.alpha = alpha
             self.k = k
-            self.ratio_ID = 1.0
+            self.ratio_ID = 2.0
             self.ratio_metric = 1.0
 
             self.ID_losses = []
@@ -38,15 +46,18 @@ class LossBuilder(nn.Module):
     #
     # Paper: https://arxiv.org/pdf/2104.10850
     # ================================================
-    def forward(self, embeddings, pred_ids, target_ids):
+    def forward(self, embeddings: torch.Tensor, pred_ids: torch.Tensor, target_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # == Calculate the cross entropy loss (ID Loss)
         ID_loss = self.cross_entropy(pred_ids, target_ids).mean()
 
         # == Calculate the Supervised Contrastive Loss (Metric Loss)
-        embeddings = F.normalize(embeddings, p=2, dim=1) # Normalize embeddings for the Metric Loss
-        hard_pairs = self.miner(embeddings, target_ids)
-        metric_loss = self.supconloss(embeddings, target_ids, hard_pairs).mean()
-
+        # embeddings = F.normalize(embeddings, p=2, dim=1) # Normalize embeddings for the Metric Loss
+        
+        #(a1, p, n) = self.miner(embeddings, target_ids)
+        #metric_loss = self.triplet_loss(embeddings, target_ids, (a1, p, n)).mean()
+        
+        metric_loss = self.triplet_loss(embeddings, target_ids).mean()
+        
         if self.apply_MALW:
             # Apply MALW algorithm
             self.ID_losses.append(ID_loss.detach().cpu())
@@ -76,42 +87,6 @@ class LossBuilder(nn.Module):
     def get_weights(self):
         return self.ratio_ID, self.ratio_metric
     
-class ContrastiveLoss(nn.Module):
-    def __init__(self, margin=0.3, **kwargs):
-        super(ContrastiveLoss, self).__init__()
-        self.margin = margin
-
-    def forward(self, inputs, targets):
-        loss = list()
-        n = inputs.size(0)
-
-        # Compute similarity matrix
-        sim_mat = torch.matmul(inputs, inputs.t())
-
-        for i in range(n):
-            pos_pair_ = torch.masked_select(sim_mat[i], targets == targets[i])
-
-            #  move itself
-            pos_pair_ = torch.masked_select(pos_pair_, pos_pair_ < 1)
-            neg_pair_ = torch.masked_select(sim_mat[i], targets != targets[i])
-
-            pos_pair_ = torch.sort(pos_pair_)[0]
-            neg_pair_ = torch.sort(neg_pair_)[0]
-
-            neg_pair = torch.masked_select(neg_pair_, neg_pair_ > self.margin)
-
-            neg_loss = 0.0
-
-            if len(neg_pair) > 0:
-                neg_loss = torch.sum(neg_pair)
-
-            pos_loss = torch.sum(-pos_pair_ + 1)
-
-            loss.append(pos_loss + neg_loss)
-
-        loss = sum(loss) / n
-        return loss
-
 class SupConLoss(nn.Module):
     """Supervised Contrastive Learning: https://arxiv.org/pdf/2004.11362.pdf.
     It also supports the unsupervised contrastive loss in SimCLR"""
@@ -125,7 +100,7 @@ class SupConLoss(nn.Module):
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    def forward(self, features: torch.Tensor, labels=None, mask=None):
+    def forward(self, features: torch.Tensor, labels = None, mask = None):
         """Compute loss for model. If both `labels` and `mask` are None,
         it degenerates to SimCLR unsupervised loss:
         https://arxiv.org/pdf/2002.05709.pdf
@@ -138,12 +113,15 @@ class SupConLoss(nn.Module):
             A loss scalar.
         """
 
-        # Normalize the features through an L2 normalization as per ReadME
-        features = F.normalize(features, dim=1)
+        # # Normalize the features through an L2 normalization as per ReadME
+        # features = F.normalize(features, dim=1)
 
         # susu
         features = features.view(self.num_ids, self.views, -1)
-        labels = labels.view(self.num_ids, self.views)[:,0]
+        labels = labels.view(self.num_ids, self.views)[:, 0]
+        
+        if(labels.shape[0] != features.shape[0]):
+            raise ValueError('Num of labels does not match num of features')
 
         if len(features.shape) < 3:
             raise ValueError('`features` needs to be [bsz, n_views, ...],'
@@ -201,9 +179,8 @@ class SupConLoss(nn.Module):
         exp_logits = torch.exp(logits) * logits_mask
         log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
 
-        # compute mean of log-likelihood over positive
-        # modified to handle edge cases when there is no positive pair
-        # for an anchor point. 
+        # Compute mean of log-likelihood over positive
+        # Modified to handle edge cases when there is no positive pair for an anchor point. 
         # Edge case e.g.:- 
         # features of shape: [4,1,...]
         # labels:            [0,1,1,2]
@@ -212,10 +189,45 @@ class SupConLoss(nn.Module):
         mask_pos_pairs = torch.where(mask_pos_pairs < 1e-6, 1, mask_pos_pairs)
         mean_log_prob_pos = (mask * log_prob).sum(1) / mask_pos_pairs
 
-        # loss
+        # Loss
         loss = - (self.temperature / self.base_temperature) * mean_log_prob_pos
         loss = loss.view(anchor_count, batch_size).mean()
 
+        return loss
+
+class TripletLoss(nn.Module):
+    
+    def __init__(self, margin=0.3):
+        super().__init__()
+        self.margin = margin
+        self.ranking_loss = nn.MarginRankingLoss(margin=margin)
+
+    def forward(self, inputs, targets):
+        """
+        Args:
+        - inputs: feature matrix with shape (batch_size, feat_dim)
+        - targets: ground truth labels with shape (num_classes)
+        """
+        n = inputs.size(0)
+
+        # Compute pairwise distance, replace by the official when merged
+        dist = torch.pow(inputs, 2).sum(dim=1, keepdim=True).expand(n, n)
+        dist = dist + dist.t()
+        dist.addmm_(inputs, inputs.t(), beta=1, alpha=-2)
+        dist = dist.clamp(min=1e-12).sqrt()  # for numerical stability
+
+        # For each anchor, find the hardest positive and negative
+        mask = targets.expand(n, n).eq(targets.expand(n, n).t())
+        dist_ap, dist_an = [], []
+        for i in range(n):
+            dist_ap.append(dist[i][mask[i]].max().unsqueeze(0))
+            dist_an.append(dist[i][mask[i] == 0].min().unsqueeze(0))
+        dist_ap = torch.cat(dist_ap)
+        dist_an = torch.cat(dist_an)
+
+        # Compute ranking hinge loss
+        y = torch.ones_like(dist_an)
+        loss = self.ranking_loss(dist_an, dist_ap, y)
         return loss
     
 class CrossEntropyLabelSmooth(nn.Module):
