@@ -2,12 +2,14 @@ yolov8:
  # -- GENERAL -- #
  main:
   video_path: 'tracking\video\video_traffic_2.mp4'
+  output_path: 'tracking\output\'
+  output_name: 'output_traffic_2.mp4'
   disp_infos: True
   save_video: True
 
  # -- MODEL -- #
  model:
-  yolo_model_name: 'yolov8n'
+  yolo_model_name: 'yolov8l'
   tracked_class: {1: 'bicycle', 2: 'car', 3: 'motorcycle', 5: 'bus', 6: 'train', 7: 'truck'}
   downscale_factor: 4
-  confidence_threshold: 0.1
+  confidence_threshold: 0.70

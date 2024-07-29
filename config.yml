@@ -6,24 +6,27 @@ reid:
 
   model:
     model: "resnet50"
-    pretrained: true,
+    pretrained: True
     device: "cuda"
-    model_val_path: "model_ep-180_loss-0.0023.pth"
+    model_val_path: "model_ep-2_loss-1.0532.pth"
 
   loss:
     alpha: 0.9
     k: 500
     margin: 0.3
     label_smoothing: 0.1
-    apply_MALW: True
+    apply_MALW: False
 
   training:
-    epochs: 200
-    batch_size: 32
-    learning_rate: 3.5e-4
+    epochs: 260
+    batch_size: 36
+    learning_rate: 1.5e-4
+    warmup_factor: 0.03
+    warmup_gamma: 0.6
+    warmup_epochs: 10
   
   validation:
-    batch_size: 32
+    batch_size: 16
     val_interval: 5
 
   test:

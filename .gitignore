@@ -3,6 +3,7 @@ data/*
 
 # Ignore tracking example video and YoloV5 model
 tracking/video/*
+tracking/output/*
 yolov*.pt
 
 # Ignore python cache files

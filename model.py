@@ -10,13 +10,20 @@ class CustomResNet(torch.nn.Module):
         # Extract the FC layer input shape
         self.fc_input_shape = model.fc.in_features
 
-        # Modify the stride of the last bottleneck block's second conv layer to 1
+        # Modify the stride of the last bottleneck block'sto 1
+        # Bottleneck(
+        #     ...
+        #     (conv2): Conv2d(512, 512, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+        #     (downsample): Sequential(
+        #       (0): Conv2d(1024, 2048, kernel_size=(1, 1), stride=(2, 2), bias=False)
+        #       ...
+        #)
+        # Modified in:
+        # (conv2): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), bias=False)
+        # (0): Conv2d(1024, 2048, kernel_size=(1, 1), stride=(1, 1), bias=False)
         model.layer4[0].conv2.stride = (1, 1)
-        
-        # Remove the downsample layer from the last bottleneck block in layer4
-        # Do not set it to None, but remove it completely to avoid any errors
-        model.layer4[0] = nn.Sequential(*list(model.layer4[0].children())[:-1])
-        
+        model.layer4[0].downsample[0].stride = (1, 1)
+                
         # Everything except the last linear layer and AdaptiveAvgPool2d
         self.extractor = torch.nn.Sequential(*list(model.children())[:-2])
 

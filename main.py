@@ -30,8 +30,6 @@ def main(config):
     
     # Training parameters
     batch_size = training_config['batch_size']
-    epochs = training_config['epochs']
-    learning_rate = training_config['learning_rate']
     
     # Validation parameters
     batch_size_val = val_config['batch_size']
@@ -83,9 +81,14 @@ def main(config):
     print(f"Unique classes: {dataset_builder.dataset.get_unique_car_ids()}")
 
     # Create the DataLoaders
-    sampler = RandomIdentitySampler(train_dataset, batch_size=batch_size, num_instances=8)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=sampler, collate_fn=train_dataset.train_collate_fn, num_workers=0)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=False, collate_fn=val_dataset.val_collate_fn, num_workers=0)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size,
+                              sampler=RandomIdentitySampler(dataset_builder.dataset.train, batch_size=batch_size, num_instances=6),
+                              collate_fn=train_dataset.train_collate_fn,
+                              num_workers=4)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size_val,
+                            shuffle=False,
+                            collate_fn=val_dataset.val_collate_fn,
+                            num_workers=4)
 
     # # Get a simple batch from train loader and print the image
     # print("\nVisualizing a batch of images...")
@@ -133,9 +136,8 @@ def main(config):
         val_interval=val_interval,
         dataloaders={'train': train_loader, 'val': {val_loader, len(dataset_builder.dataset.query)}},
         loss_fn=loss_fn,
-        epochs=epochs,
-        learning_rate=learning_rate,
-        device=device
+        device=device,
+        train_configs=training_config
     )
     trainer.run()
 

@@ -1,6 +1,7 @@
 import cv2
 import time
 import yaml
+import os
 
 from ultralytics import YOLO
 
@@ -11,15 +12,21 @@ with open('tracking/config.yml', 'r') as f:
 # Visualization Parameters
 DISP_INFOS = config['main']['disp_infos']
 SAVE_VIDEO = config['main']['save_video']
+input_path = config['main']['video_path']
+output_path = config['main']['output_path']
+output_name = config['main']['output_name']
 
+if(not os.path.exists(output_path)):
+    os.makedirs(output_path)
+    
 # YOLOv8 Parameters
-yolo_name = config['detector']['yolo_name']
-tracked_classes = config['detector']['tracked_class']
-conf_thresh = config['detector']['confidence_threshold'] # Set the confidence threshold
+yolo_name = config['model']['yolo_model_name']
+tracked_classes = config['model']['tracked_class']
+conf_thresh = config['model']['confidence_threshold'] # Set the confidence threshold
 model = YOLO(yolo_name + '.pt') # Load the YOLOv8 model
 
 # Load the video file
-cap = cv2.VideoCapture(R"{}".format(config['main']['video_path']))
+cap = cv2.VideoCapture(R"{}".format(input_path))
 
 if(SAVE_VIDEO):
     # Get the width and height of the video frame
@@ -27,7 +34,7 @@ if(SAVE_VIDEO):
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     # Define the codec and create a VideoWriter object to save the video
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter('output.mp4', fourcc, 20.0, (frame_width, frame_height))
+    out = cv2.VideoWriter(os.path.join(output_path, output_name), fourcc, 30.0, (frame_width, frame_height))
 
 # Run the tracking loop
 while cap.isOpened():

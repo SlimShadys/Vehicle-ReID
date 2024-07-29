@@ -16,7 +16,8 @@ def main(config):
     model_config = config['model']
     val_config = config['validation']
     test_config = config['test']
-
+    training_configs = config['training']
+    
     # Dataset variables
     data_path = dataset_config['data_path']
     dataset_name = dataset_config['dataset_name']
@@ -27,7 +28,7 @@ def main(config):
     model = model_config['model']
     pretrained = model_config['pretrained']
     model_val_path = model_config['model_val_path']
-    
+        
     # Validation parameters
     batch_size_val = val_config['batch_size']
     
@@ -57,17 +58,18 @@ def main(config):
     model.load_state_dict(torch.load(model_val_path))
     model.eval()
     print(model)
-    print("Successfully loaded model parameters from file: ", model_val_path)
+    print(f"Successfully loaded model parameters from file: {model_val_path}")
 
     val_transform = transforms.Compose([
-        transforms.Resize((384, 384)),          # Resize to 384x384
+        transforms.Resize((384, 384), interpolation=transforms.InterpolationMode.BILINEAR),          # Resize to 384x384
         transforms.ToTensor(),                  # Convert to tensor
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]), # Normalize
     ])
 
     if not run_reid_metrics:
         # Read 2 images from /data/test
-        path_img_1 = os.path.join("data", "test", "honda_f.jpg")
-        path_img_2 = os.path.join("data", "test", "matiz_f.jpg")
+        path_img_1 = os.path.join("data", "test", "matiz_b.jpg")
+        path_img_2 = os.path.join("data", "test", "matiz_b_2.jpg")
         print(F"Reading the following images:")
         print(F"- {path_img_1}")
         print(F"- {path_img_2}")
@@ -89,8 +91,8 @@ def main(config):
 
         # Calculate the L2 distance between the 2 images
         # Smaller distances indicate higher similarity, while larger distances indicate less similarity
-        distance = torch.nn.functional.pairwise_distance(features_1, features_2)
-        print(f"Distance between the 2 images: {distance.item()}")
+        distance = euclidean_dist(features_1, features_2)
+        print(f"Distance between the 2 images: {distance.item():.4f}")
     else:
         # Create Dataset and DataLoaders
         print(f"Building Dataset:")
@@ -108,14 +110,15 @@ def main(config):
         val_loader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=False, collate_fn=val_dataset.val_collate_fn, num_workers=0)
 
         # Create the Trainer
+        training_configs['learning_rate'] = None
+        
         trainer = Trainer(
             model=model,
             val_interval=0,
             dataloaders={'train': None, 'val': {val_loader, len(dataset_builder.dataset.query)}},
             loss_fn=None,
-            epochs=None,
-            learning_rate=None,
-            device=device
+            device=device,
+            train_configs=training_configs
         )
         trainer.validate(epoch=0, save_results=False)
     

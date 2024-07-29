@@ -5,8 +5,6 @@ import xml.etree.ElementTree as ET
 
 from torchvision import transforms
 
-from tqdm import tqdm
-
 import torch
 import torchvision.transforms as transforms
 from torch.utils.data import Dataset
@@ -68,6 +66,7 @@ class Veri776():
             transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1), # Random color jitter
             transforms.ToTensor(),                  # Convert to tensor
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]), # Normalize
+            transforms.RandomErasing(p=0.5, value=[0.485, 0.456, 0.406]) # Random erasing with probability 0.5 and mean=[0.485, 0.456, 0.406]
         ])
 
         # Specific transforms for Veri-776
@@ -526,8 +525,8 @@ class RandomIdentitySampler(Sampler):
         self.num_pids_per_batch = self.batch_size // self.num_instances
         self.index_dic = defaultdict(list)
         
-        # img_paths, imgs, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps
-        for index, (_, _, pid, _, _, _, _, _) in tqdm(enumerate(self.data_source), total=len(self.data_source), desc="Building Training Dataloader"):
+        # img_path, car_id, cam_id, model_id, color_id, type_id, timestamp
+        for index, (_, pid, _, _, _, _, _) in enumerate(self.data_source):
             self.index_dic[pid].append(index)
         self.pids = list(self.index_dic.keys())
 
