@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torchvision.models as models
-from utils import GeM, weights_init_kaiming, weights_init_classifier
+from utils import GeM, weights_init_classifier, weights_init_kaiming
 
 class CustomResNet(torch.nn.Module):
     def __init__(self, model: torch.nn.Module, num_classes):
@@ -10,12 +10,14 @@ class CustomResNet(torch.nn.Module):
         # Extract the FC layer input shape
         self.fc_input_shape = model.fc.in_features
 
-        # Modify the stride of the last bottleneck block'sto 1
+        # Modify the stride of the last bottleneck block to 1
         # Bottleneck(
         #     ...
         #     (conv2): Conv2d(512, 512, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1), bias=False)
+        #       ...                                                 -----
         #     (downsample): Sequential(
         #       (0): Conv2d(1024, 2048, kernel_size=(1, 1), stride=(2, 2), bias=False)
+        #                                                           -----
         #       ...
         #)
         # Modified in:

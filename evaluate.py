@@ -1,4 +1,5 @@
 import numpy as np
+from tqdm import tqdm
 
 def eval_func(distmat, q_pids, g_pids, q_camids, g_camids, max_rank=50):
     """Evaluation with market1501 metric
@@ -16,7 +17,7 @@ def eval_func(distmat, q_pids, g_pids, q_camids, g_camids, max_rank=50):
     all_cmc = []
     all_AP = []
     num_valid_q = 0.  # number of valid query
-    for q_idx in range(num_q):
+    for q_idx in tqdm(range(num_q), desc="Computing CMC and mAP", total=num_q):
         # get query pid and camid
         q_pid = q_pids[q_idx]
         q_camid = q_camids[q_idx]

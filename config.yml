@@ -14,17 +14,25 @@ reid:
     alpha: 0.9
     k: 500
     margin: 0.3
-    label_smoothing: 0.1
+    label_smoothing: 0.0
     apply_MALW: False
 
   training:
     epochs: 260
-    batch_size: 36
+    batch_size: 32
+    num_workers: 4
+    # For Optimizer
     learning_rate: 1.5e-4
-    warmup_factor: 0.03
+    bias_lr_factor: 2
+    weight_decay: 0.0005
+    weight_decay_bias: 0.0001
+    # For WarmupDecayLR
+    steps: [20, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 195, 210, 225, 240, 255]
     warmup_gamma: 0.6
     warmup_epochs: 10
-  
+    decay_method: "linear"
+    log_interval: 100
+
   validation:
     batch_size: 16
     val_interval: 5

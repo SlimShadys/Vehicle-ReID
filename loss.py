@@ -1,41 +1,38 @@
+import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import numpy as np
-from pytorch_metric_learning import losses, miners, distances
+from pytorch_metric_learning import distances, losses, miners
 from utils import euclidean_dist, normalize
 
 class LossBuilder(nn.Module):
-    def __init__(self, alpha=0.9, k=10, margin=0.3, label_smoothing=0.1, apply_MALW=False, num_classes=1000, **kwargs):
+    def __init__(self, alpha=0.9, k=10, margin=0.3, label_smoothing=0.1, apply_MALW=False, **kwargs) -> torch.nn.Module:
         super(LossBuilder, self).__init__()
         
-        self.num_classes = num_classes
         self.iteration = 0
-        self.margin = margin  # Margin for contrastive loss
+        self.margin = margin                    # Margin for contrastive loss
+        self.label_smoothing = label_smoothing  # Label smoothing factor
 
         # ID Loss -> Cross Entropy Loss
-        self.cross_entropy = nn.CrossEntropyLoss()
-        # self.cross_entropy = CrossEntropyLabelSmooth(num_classes=self.num_classes, epsilon=label_smoothing, use_gpu=True)
+        self.cross_entropy = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
 
-        # Metric Loss -> Supervised Contrastive Loss / Contrastive Loss
+        # Metric Loss -> Supervised Contrastive Loss
         # self.distance = distances.CosineSimilarity()
         # self.miner = miners.TripletMarginMiner(margin=self.margin, distance=self.distance, type_of_triplets="semihard")
         # self.triplet_loss = losses.SupConLoss()
         
-        # Metric Loss -> Supervised Contrastive Loss / Contrastive Loss V2
+        # Metric Loss -> TripletMarginLoss
         # self.distance = distances.LpDistance()
         # self.miner = miners.BatchHardMiner(distance=self.distance)
         # self.triplet_loss = losses.TripletMarginLoss(margin=self.margin)
         
-        # TO BE TESTED
-        self.triplet_loss = TripletLossV2(self.margin)
+        self.triplet_loss = TripletLoss(self.margin)
                 
         self.apply_MALW = apply_MALW
 
         if(self.apply_MALW):
             self.alpha = alpha
             self.k = k
-            self.ratio_ID = 2.0
+            self.ratio_ID = 1.0
             self.ratio_metric = 1.0
 
             self.ID_losses = []
@@ -45,13 +42,14 @@ class LossBuilder(nn.Module):
     # Apply the MALW algorithm (Mean Adaptive Loss Weighting)
     #
     # Paper: https://arxiv.org/pdf/2104.10850
+    # Github: https://github.com/cybercore-co-ltd/track2_aicity_2021/blob/master/lib/layers/build.py#L42-L70
     # ================================================
     def forward(self, embeddings: torch.Tensor, pred_ids: torch.Tensor, target_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # == Calculate the cross entropy loss (ID Loss)
         ID_loss = self.cross_entropy(pred_ids, target_ids)
 
         # == Calculate the Supervised Contrastive Loss (Metric Loss)
-        # embeddings = F.normalize(embeddings, p=2, dim=1) # Normalize embeddings for the Metric Loss
+        # embeddings = nn.functional.normalize(embeddings, p=2, dim=1) # Normalize embeddings for the Metric Loss
         
         #(a1, p, n) = self.miner(embeddings, target_ids)
         #metric_loss = self.triplet_loss(embeddings, target_ids, (a1, p, n)).mean()
@@ -64,15 +62,15 @@ class LossBuilder(nn.Module):
             self.metric_losses.append(metric_loss.detach().cpu())
             
             # Update the weights every k iterations
-            if (self.iteration % self.k == 0) and len(self.ID_losses) > 0:
-                ID_std = np.array(self.ID_losses).mean()
-                metric_std = np.array(self.metric_losses).mean()
-                
-                self.ID_losses.clear()
-                self.metric_losses.clear()
+            if (len(self.ID_losses) % self.k == 0) and len(self.ID_losses) > 0:
+                ID_std = np.array(self.ID_losses).std()
+                metric_std = np.array(self.metric_losses).std()
 
                 if ID_std > metric_std:
                     self.ratio_ID = (self.alpha * self.ratio_ID) + ((1 - (ID_std - metric_std) / ID_std) * 0.1)
+                    
+                self.ID_losses.clear()
+                self.metric_losses.clear()
             else:
                 pass # Keep the previous ratio
                 
@@ -195,42 +193,7 @@ class SupConLoss(nn.Module):
 
         return loss
 
-class TripletLoss(nn.Module):
-    
-    def __init__(self, margin=0.3):
-        super().__init__()
-        self.margin = margin
-        self.ranking_loss = nn.MarginRankingLoss(margin=margin)
-
-    def forward(self, inputs, targets):
-        """
-        Args:
-        - inputs: feature matrix with shape (batch_size, feat_dim)
-        - targets: ground truth labels with shape (num_classes)
-        """
-        n = inputs.size(0)
-
-        # Compute pairwise distance, replace by the official when merged
-        dist = torch.pow(inputs, 2).sum(dim=1, keepdim=True).expand(n, n)
-        dist = dist + dist.t()
-        dist.addmm_(inputs, inputs.t(), beta=1, alpha=-2)
-        dist = dist.clamp(min=1e-12).sqrt()  # for numerical stability
-
-        # For each anchor, find the hardest positive and negative
-        mask = targets.expand(n, n).eq(targets.expand(n, n).t())
-        dist_ap, dist_an = [], []
-        for i in range(n):
-            dist_ap.append(dist[i][mask[i]].max().unsqueeze(0))
-            dist_an.append(dist[i][mask[i] == 0].min().unsqueeze(0))
-        dist_ap = torch.cat(dist_ap)
-        dist_an = torch.cat(dist_an)
-
-        # Compute ranking hinge loss
-        y = torch.ones_like(dist_an)
-        loss = self.ranking_loss(dist_an, dist_ap, y)
-        return loss
-
-class TripletLossV2(object):
+class TripletLoss(object):
     """Modified from Tong Xiao's open-reid (https://github.com/Cysu/open-reid).
     Related Triplet Loss theory can be found in paper 'In Defense of the Triplet
     Loss for Person Re-Identification'."""
@@ -247,7 +210,7 @@ class TripletLossV2(object):
         Args:
         dist_mat: pytorch Variable, pair wise distance between samples, shape [N, N]
         labels: pytorch LongTensor, with shape [N]
-        return_inds: whether to return the indices. Save time if `False`(?)
+        return_inds: whether to return the indices. Save time if `False`
         Returns:
         dist_ap: pytorch Variable, distance(anchor, positive); shape [N]
         dist_an: pytorch Variable, distance(anchor, negative); shape [N]
@@ -255,87 +218,58 @@ class TripletLossV2(object):
             indices of selected hard positive samples; 0 <= p_inds[i] <= N - 1
         n_inds: pytorch LongTensor, with shape [N];
             indices of selected hard negative samples; 0 <= n_inds[i] <= N - 1
-        NOTE: Only consider the case in which all labels have same num of samples,
-        thus we can cope with all anchors in parallel.
         """
 
         assert len(dist_mat.size()) == 2
         assert dist_mat.size(0) == dist_mat.size(1)
+        
         N = dist_mat.size(0)
+        dist_ap, dist_an = [], []
 
-        # shape [N, N]
-        is_pos = labels.expand(N, N).eq(labels.expand(N, N).t())
-        is_neg = labels.expand(N, N).ne(labels.expand(N, N).t())
-
-        # `dist_ap` means distance(anchor, positive)
-        # both `dist_ap` and `relative_p_inds` with shape [N, 1]
-        dist_ap, relative_p_inds = torch.max(
-            dist_mat[is_pos].contiguous().view(N, -1), 1, keepdim=True)
-        # `dist_an` means distance(anchor, negative)
-        # both `dist_an` and `relative_n_inds` with shape [N, 1]
-        dist_an, relative_n_inds = torch.min(
-            dist_mat[is_neg].contiguous().view(N, -1), 1, keepdim=True)
-        # shape [N]
-        dist_ap = dist_ap.squeeze(1)
-        dist_an = dist_an.squeeze(1)
-
+        # Shape [N, N]
+        mask = labels.expand(N, N).eq(labels.expand(N, N).t())
+        
+        # 'dist_ap' means distance(anchor, positive)
+        # 'dist_an' means distance(anchor, negative)
+        # Distances will have shape [N, 1]
+        for i in range(N):
+            negative_mask = dist_mat[i][mask[i] == 0]
+            positive_mask = dist_mat[i][mask[i]]
+            
+            if(len(positive_mask) == 0):
+                dist_ap.append(torch.tensor([0.0]))
+                print('WARNING: No positive pair found for anchor point')
+            elif(len(negative_mask) == 0):
+                dist_an.append(torch.tensor([0.0]))
+                print('WARNING: No negative pair found for anchor point')
+            else:
+                dist_ap.append(positive_mask.max().unsqueeze(0))
+                dist_an.append(negative_mask.min().unsqueeze(0))
+            
+        dist_ap = torch.cat(dist_ap) # Shape: [N]
+        dist_an = torch.cat(dist_an) # Shape: [N]
+        
+        # Retrieve the indices of the positive and negative pairs | To be tested
         if return_inds:
-            # shape [N, N]
-            ind = (labels.new().resize_as_(labels)
-                .copy_(torch.arange(0, N).long())
-                .unsqueeze(0).expand(N, N))
-            # shape [N, 1]
-            p_inds = torch.gather(
-                ind[is_pos].contiguous().view(N, -1), 1, relative_p_inds.data)
-            n_inds = torch.gather(
-                ind[is_neg].contiguous().view(N, -1), 1, relative_n_inds.data)
-            # shape [N]
-            p_inds = p_inds.squeeze(1)
-            n_inds = n_inds.squeeze(1)
+            p_inds = torch.argmax(dist_mat + mask.float() * 1e6, dim=1)
+            n_inds = torch.argmin(dist_mat + mask.float() * 1e6, dim=1)
             return dist_ap, dist_an, p_inds, n_inds
-
-        return dist_ap, dist_an
+        else:
+            return dist_ap, dist_an, None, None
 
     def __call__(self, global_feat, labels, normalize_feature=False):
         if normalize_feature:
             global_feat = normalize(global_feat, axis=-1)
+            
+        # Compute L2 distance between features and find hard positive and negative samples
         dist_mat = euclidean_dist(global_feat, global_feat)
-        dist_ap, dist_an = self.hard_example_mining(dist_mat, labels)
+        dist_ap, dist_an, _, _ = self.hard_example_mining(dist_mat, labels, return_inds=False)
         
+        # Compute ranking hinge loss
         y = dist_an.new().resize_as_(dist_an).fill_(1)
         if self.margin is not None:
             loss = self.ranking_loss(dist_an, dist_ap, y)
         else:
             loss = self.ranking_loss(dist_an - dist_ap, y)
+            
         return loss, dist_ap, dist_an
-
-class CrossEntropyLabelSmooth(nn.Module):
-    """Cross entropy loss with label smoothing regularizer.
-
-    Reference:
-    Szegedy et al. Rethinking the Inception Architecture for Computer Vision. CVPR 2016.
-    Equation: y = (1 - epsilon) * y + epsilon / K.
-
-    Args:
-        num_classes (int): number of classes.
-        epsilon (float): weight.
-    """
-    def __init__(self, num_classes, epsilon=0.1, use_gpu=True):
-        super(CrossEntropyLabelSmooth, self).__init__()
-        self.num_classes = num_classes
-        self.epsilon = epsilon
-        self.use_gpu = use_gpu
-        self.logsoftmax = nn.LogSoftmax(dim=1)
-
-    def forward(self, inputs, targets):
-        """
-        Args:
-            inputs: prediction matrix (before softmax) with shape (batch_size, num_classes)
-            targets: ground truth labels with shape (batch_size)
-        """
-        log_probs = self.logsoftmax(inputs)
-        targets = torch.zeros(log_probs.size()).scatter_(1, targets.unsqueeze(1).data.cpu(), 1)
-        if self.use_gpu: targets = targets.cuda()
-        targets = (1 - self.epsilon) * targets + self.epsilon / self.num_classes
-        loss = (- targets * log_probs).mean(0).sum()
-        return loss

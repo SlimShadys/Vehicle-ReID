@@ -1,8 +1,9 @@
 import os
-from PIL import Image
+
 import torch
-import torch.nn.functional as F
 import torch.nn as nn
+import torch.nn.functional as F
+from PIL import Image
 from torch.nn.parameter import Parameter
 
 def read_image(img_path):
@@ -26,12 +27,14 @@ def compute_cross_entropy(p, q):
     return - loss.mean()
 
 '''
-Generalized-mean (GeM) Pooling | Borrowed from cirtorch
+Generalized Mean Pooling (GeM)
+Taken from:
+    => https://github.com/amaarora/amaarora.github.io/blob/master/nbs/GeM%20Pooling.ipynb
 '''
 class GeM(nn.Module):
-    def __init__(self, p=3.0, eps=1e-6, freeze_p=True):
+    def __init__(self, p=3.0, eps=1e-6):
         super(GeM, self).__init__()
-        self.p = p if freeze_p else Parameter(torch.ones(1) * p)
+        self.p = Parameter(torch.ones(1) * p)
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -73,8 +76,8 @@ def euclidean_dist(x, y):
     xx = torch.pow(x, 2).sum(1, keepdim=True).expand(m, n)
     yy = torch.pow(y, 2).sum(1, keepdim=True).expand(n, m).t()
     dist = xx + yy
-    dist.addmm_(x, y.t(), beta=1, alpha=-2) # dist.addmm_(1, -2, x, y.t()) -> Original line
-    dist = dist.clamp(min=1e-12).sqrt()  # for numerical stability
+    dist.addmm_(x, y.t(), beta=1, alpha=-2)
+    dist = dist.clamp(min=1e-12).sqrt() # for numerical stability
     return dist
 
 def normalize(x, axis=-1):

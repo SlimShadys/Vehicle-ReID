@@ -1,13 +1,11 @@
 import matplotlib.pyplot as plt
-from dataset import DatasetBuilder
-from model import ModelBuilder
-from loss import LossBuilder
-from torch.utils.data import DataLoader
-from training import *
-from utils import *
-from dataset import RandomIdentitySampler
-
+import torch
 import yaml
+from dataset import DatasetBuilder, RandomIdentitySampler
+from loss import LossBuilder
+from model import ModelBuilder
+from torch.utils.data import DataLoader
+from training import Trainer
 
 def main(config):
 
@@ -30,6 +28,7 @@ def main(config):
     
     # Training parameters
     batch_size = training_config['batch_size']
+    num_workers = training_config['num_workers']
     
     # Validation parameters
     batch_size_val = val_config['batch_size']
@@ -84,11 +83,11 @@ def main(config):
     train_loader = DataLoader(train_dataset, batch_size=batch_size,
                               sampler=RandomIdentitySampler(dataset_builder.dataset.train, batch_size=batch_size, num_instances=6),
                               collate_fn=train_dataset.train_collate_fn,
-                              num_workers=4)
+                              num_workers=num_workers)
     val_loader = DataLoader(val_dataset, batch_size=batch_size_val,
                             shuffle=False,
                             collate_fn=val_dataset.val_collate_fn,
-                            num_workers=4)
+                            num_workers=num_workers)
 
     # # Get a simple batch from train loader and print the image
     # print("\nVisualizing a batch of images...")
@@ -128,7 +127,7 @@ def main(config):
     print("--------------------")
 
     # Define the loss function
-    loss_fn = LossBuilder(alpha=alpha, k=k, margin=margin, label_smoothing=label_smoothing, apply_MALW=apply_MALW, num_classes=num_classes[dataset_name])
+    loss_fn = LossBuilder(alpha=alpha, k=k, margin=margin, label_smoothing=label_smoothing, apply_MALW=apply_MALW)
 
     # Create the Trainer
     trainer = Trainer(

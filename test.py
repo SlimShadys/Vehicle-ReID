@@ -1,13 +1,13 @@
+import os
+
 import matplotlib.pyplot as plt
+import torchvision.transforms as transforms
+import yaml
 from dataset import DatasetBuilder
 from model import ModelBuilder
 from torch.utils.data import DataLoader
 from training import *
 from utils import normalize, read_image
-import torchvision.transforms as transforms
-
-import yaml
-import os
 
 def main(config):
 

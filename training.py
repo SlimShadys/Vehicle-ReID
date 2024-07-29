@@ -1,35 +1,45 @@
-import torch
-from tqdm import tqdm
+from typing import Optional
+
 import numpy as np
+import torch
 from evaluate import eval_func
-from utils import euclidean_dist
-from bisect import bisect_right
-
 from torch.optim.lr_scheduler import _LRScheduler
+from tqdm import tqdm
+from utils import euclidean_dist
 
-class WarmupDecayLRScheduler(_LRScheduler):
-    def __init__(self, optimizer, steps, gamma, warmup_factor, warmup_epochs, last_epoch=-1):
-        self.optimizer = optimizer
-        self.steps = steps
-        self.gamma = gamma
-        self.warmup_factor = warmup_factor
+class WarmupDecayLR(_LRScheduler):
+    def __init__(self, optimizer, milestones, warmup_epochs=10, warmup_gamma=0.6, decay_method="linear", last_epoch=-1):
+        self.milestones = sorted(milestones)
         self.warmup_epochs = warmup_epochs
-        super(WarmupDecayLRScheduler, self).__init__(optimizer, last_epoch)
+        self.warmup_gamma = warmup_gamma
+        self.decay_method = decay_method
+        super(WarmupDecayLR, self).__init__(optimizer, last_epoch)
 
     def get_lr(self):
-        warmup_factor = 1.0
+        # Warmup phase
         if self.last_epoch < self.warmup_epochs:
-            alpha = self.last_epoch / self.warmup_epochs
-            warmup_factor = self.warmup_factor * (1 - alpha) + alpha
+            return [base_lr * ((self.last_epoch + 1) / self.warmup_epochs) for base_lr in self.base_lrs]
         
-        return [base_lr * warmup_factor * self.gamma ** bisect_right(self.steps, self.last_epoch)
-                for base_lr in self.base_lrs]
+        # Milestone decay phase
+        elif(self.decay_method == "linear"): 
+            return [base_lr * (self.warmup_gamma ** len([m for m in self.milestones if m <= self.last_epoch]))
+                    for base_lr in self.base_lrs]
+        
+        # Smooth decay phase
+        else:
+            return [self._get_smooth_lr(base_lr) for base_lr in self.base_lrs]
 
-    def retrieve_lr(self):
-        return [base_lr for base_lr in self.base_lrs]
+    def _get_smooth_lr(self, base_lr):
+        if self.last_epoch < self.milestones[0]:
+            return base_lr
+        for i in range(len(self.milestones) - 1):
+            if self.milestones[i] <= self.last_epoch < self.milestones[i+1]:
+                t = (self.last_epoch - self.milestones[i]) / (self.milestones[i+1] - self.milestones[i])
+                return base_lr * (self.warmup_gamma ** i) * (self.warmup_gamma ** t)
+        return base_lr * (self.warmup_gamma ** len(self.milestones))
 
 class Trainer:
-    def __init__(self, model, dataloaders, val_interval, loss_fn, train_configs, device='cuda'):
+    def __init__(self, model: torch.nn.Module, dataloaders, val_interval, loss_fn: torch.Tensor, train_configs, device='cuda'):
         self.model = model
         self.train_loader = dataloaders['train']
         self.val_loader, self.num_query = dataloaders['val']
@@ -37,6 +47,7 @@ class Trainer:
         self.loss_fn = loss_fn
         self.epochs = train_configs['epochs']
         self.learning_rate = train_configs['learning_rate']
+        self.log_interval = train_configs['log_interval']
         self.device = device
 
         self.running_loss = []
@@ -45,25 +56,30 @@ class Trainer:
         self.acc_list = []
 
         if(self.learning_rate is not None):
+            # Update the weights decay and learning rate for the model
             model_params = []
             for key, value in self.model.named_parameters():
                 if not value.requires_grad:
                     continue
                 lr = self.learning_rate
-                weight_decay = 0.0005
+                weight_decay = train_configs['weight_decay']
                 if "bias" in key:
-                    lr = self.learning_rate * 2
-                    weight_decay = 0.
+                    lr = self.learning_rate * train_configs['bias_lr_factor']
+                    weight_decay = train_configs['weight_decay_bias']
                 model_params += [{"params": [value], "lr": lr, "weight_decay": weight_decay}]
+                
+            # Create the optimizer
             self.optimizer = torch.optim.Adam(model_params, lr=self.learning_rate)
 
-            # For warmup and decay
-            self.scheduler_warmup = WarmupDecayLRScheduler(
-                self.optimizer,
-                steps = [20, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 195, 210, 225, 240, 255],
-                gamma=train_configs['warmup_gamma'],
-                warmup_factor=train_configs['warmup_factor'],
+            # For Learning Rate Warm-up and Decay
+            # We first warm-up the LR up for a few epochs, so that it reaches the desired LR
+            # Then, we decay the LR using the milestones or a smooth decay
+            self.scheduler_warmup = WarmupDecayLR(
+                optimizer=self.optimizer,
+                milestones=train_configs['steps'],
                 warmup_epochs=train_configs['warmup_epochs'],
+                warmup_gamma=train_configs['warmup_gamma'],
+                decay_method=train_configs['decay_method']
             )
 
     def empty_lists(self):
@@ -75,19 +91,20 @@ class Trainer:
     def run(self):
         for epoch in range(self.epochs):
             self.empty_lists() # Empty the lists for each epoch
-                     
+            
+            # Train the model
             self.train(epoch)
 
             # Update learning rate
             self.scheduler_warmup.step()
             
             # Log the current learning rate
-            print(f"INFO --- Learning Rate: {self.scheduler_warmup.retrieve_lr()[0]:.6f}")
+            opt_lr = self.scheduler_warmup.optimizer.param_groups[0]['lr']
             
             if(epoch > 0 and epoch % self.val_interval == 0):
                 self.validate(epoch, save_results=True)
 
-            print(f"Epoch {epoch}/{self.epochs}\n"
+            print(f"Epoch {epoch}/{self.epochs} | LR: {opt_lr:.2e}\n"
                 f"\t - ID Loss: {np.mean(self.running_id_loss):.4f}\n"
                 f"\t - Metric Loss: {np.mean(self.running_metric_loss):.4f}\n"
                 f"\t - Loss (ID + Metric): {np.mean(self.running_loss):.4f}\n"
@@ -121,9 +138,15 @@ class Trainer:
             self.running_metric_loss.append(metric_loss[0].detach().cpu().item())
             self.acc_list.append(accuracy.detach().cpu().item())
             
-        return
+            if(i % self.log_interval == 0):
+                print(f"\tIteration[{i}/{len(self.train_loader)}] "
+                    f"Loss: {np.mean(self.running_loss):.4f} | "
+                    f"ID Loss: {np.mean(self.running_id_loss):.4f} | "
+                    f"Metric Loss: {np.mean(self.running_metric_loss):.4f} | "
+                    f"Accuracy: {np.mean(self.acc_list):.4f} | "
+                    f"LR: {self.scheduler_warmup.get_lr()[0]:.2e}")            
 
-    def validate(self, epoch, save_results=False):
+    def validate(self, epoch: Optional[int] = 0, save_results=False):
         self.model.eval()
         num_query = self.num_query
         features, car_ids, cam_ids, paths = [], [], [], []
@@ -155,9 +178,9 @@ class Trainer:
         distmat = euclidean_dist(query_feat, gallery_feat)
 
         cmc, mAP, _ = eval_func(distmat.numpy(), query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(), 
-                             query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(), max_rank=5)
+                             query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(), max_rank=10)
         
-        CMC_RANKS = [1, 3, 5]
+        CMC_RANKS = [1, 3, 5, 10]
         for r in CMC_RANKS:
             print('\t - CMC Rank-{}: {:.2%}'.format(r, cmc[r-1]))
         print('\t - mAP: {:.2%}'.format(mAP))
@@ -170,5 +193,6 @@ class Trainer:
                         f"\t - CMC Rank-1: {cmc[CMC_RANKS[0]-1]:.2%}\n"
                         f"\t - CMC Rank-3: {cmc[CMC_RANKS[1]-1]:.2%}\n"
                         f"\t - CMC Rank-5: {cmc[CMC_RANKS[2]-1]:.2%}\n"
+                        f"\t - CMC Rank-10: {cmc[CMC_RANKS[3]-1]:.2%}\n"
                         f"\t - mAP: {mAP:.2%}\n"
                         f"\t ----------------------\n")

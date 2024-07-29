@@ -1,13 +1,17 @@
+import copy
 import glob
 import os
+import random
 import re
 import xml.etree.ElementTree as ET
+from collections import defaultdict
 
-from torchvision import transforms
-
+import numpy as np
 import torch
 import torchvision.transforms as transforms
 from torch.utils.data import Dataset
+from torch.utils.data.sampler import Sampler
+from torchvision import transforms
 from utils import read_image
 
 class DatasetBuilder():
@@ -469,7 +473,7 @@ class ImageDataset(Dataset):
     def __len__(self):
         return len(self.data)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx) -> tuple[str, torch.Tensor, int, int, int, int, int, str]:
         img_path, car_id, cam_id, model_id, color_id, type_id, timestamp = self.data[idx]
 
         # Read image in PIL format
@@ -481,7 +485,7 @@ class ImageDataset(Dataset):
 
         return img_path, img, car_id, cam_id, model_id, color_id, type_id, timestamp
 
-    def train_collate_fn(self, batch):
+    def train_collate_fn(self, batch) -> tuple[list[str], torch.Tensor, torch.Tensor, torch.Tensor, int, int, int, str]:
         img_paths, imgs, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps = zip(*batch)
 
         # Transform Car IDs and Images to Tensors
@@ -491,7 +495,7 @@ class ImageDataset(Dataset):
 
         return img_paths, imgs, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps
     
-    def val_collate_fn(self, batch):
+    def val_collate_fn(self, batch) -> tuple[list[str], torch.Tensor, torch.Tensor, torch.Tensor, int, int, int, str]:
         img_paths, imgs, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps = zip(*batch)
 
         # Transform Car IDs and Images to Tensors
@@ -500,13 +504,6 @@ class ImageDataset(Dataset):
         cam_ids = torch.tensor(cam_ids, dtype=torch.int64)
 
         return img_paths, imgs, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps
-
-import copy
-import random
-from collections import defaultdict
-
-import numpy as np
-from torch.utils.data.sampler import Sampler
 
 class RandomIdentitySampler(Sampler):
     """
