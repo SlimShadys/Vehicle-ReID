@@ -1,10 +1,17 @@
 # Ignore the data path (30+ GB)
 data/*
 
-# Ignore tracking example video and YoloV5 model
+# Ignore tracking example video and YOLO models
 tracking/video/*
 tracking/output/*
 yolov*.pt
 
 # Ignore python cache files
 __pycache__/*
+datasets/__pycache__/*
+losses/__pycache__/*
+misc/__pycache__/*
+models/__pycache__/*
+results/__pycache__/*
+tracking/__pycache__/*
+training/__pycache__/*

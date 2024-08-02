@@ -1,13 +1,14 @@
 import os
+import sys
 
-import matplotlib.pyplot as plt
-import torchvision.transforms as transforms
+import torch
 import yaml
 from dataset import DatasetBuilder
+from datasets.transforms import Transformations
+from misc.utils import euclidean_dist, normalize, read_image
 from model import ModelBuilder
 from torch.utils.data import DataLoader
-from training import *
-from utils import normalize, read_image
+from train import Trainer
 
 def main(config):
 
@@ -55,16 +56,15 @@ def main(config):
     model = model_builder.move_to(device)
 
     # Load parameters from a .pth file
-    model.load_state_dict(torch.load(model_val_path))
+    checkpoint = torch.load(model_val_path, map_location=device)
+    model.load_state_dict(checkpoint['model'])
     model.eval()
     print(model)
     print(f"Successfully loaded model parameters from file: {model_val_path}")
 
-    val_transform = transforms.Compose([
-        transforms.Resize((384, 384), interpolation=transforms.InterpolationMode.BILINEAR),          # Resize to 384x384
-        transforms.ToTensor(),                  # Convert to tensor
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]), # Normalize
-    ])
+    # Define the validation transformations
+    transforms = Transformations()
+    val_transform = transforms.get_val_transform()
 
     if not run_reid_metrics:
         # Read 2 images from /data/test
@@ -122,15 +122,17 @@ def main(config):
         )
         trainer.validate(epoch=0, save_results=False)
     
+# Usage: python test.py <path_to_config.yml>
 if __name__ == '__main__':
-    # import sys
-    # if len(sys.argv) != 2:
-    #     print("Usage: python script.py <path_to_config.json>")
-    #     sys.exit(1)
-    # main(sys.argv[1])
-
+    config_file = 'config.yml'
+    if len(sys.argv) != 2:
+        print("You might be using an IDE to run the script. Running with default config file: 'config.yml'")
+    else:
+        config_file = sys.argv[1]
+        
     # Parameters from config.yml file
-    with open('config.yml', 'r') as f:
+    with open(config_file, 'r') as f:
         config = yaml.load(f, yaml.FullLoader)['reid']
-
+    
+    # Run the main function
     main(config)

@@ -1,9 +1,12 @@
+# Libraries required for the Vehicle Re-Identification System
 torch
 torchaudio
 torchvision
 pytorch-metric-learning
 pandas
 tqdm
+
+# From now on, the libraries are needed for the Tracking System
 cycler==0.11.0
 deep-sort-realtime==1.3.2
 kiwisolver==1.4.4

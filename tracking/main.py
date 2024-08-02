@@ -1,8 +1,8 @@
-import cv2
-import time
-import yaml
 import os
+import time
 
+import cv2
+import yaml
 from ultralytics import YOLO
 
 # Parameters from config.yml file

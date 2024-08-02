@@ -1,3 +1,7 @@
+import os
+import shutil
+import sys
+
 import matplotlib.pyplot as plt
 import torch
 import yaml
@@ -5,7 +9,7 @@ from dataset import DatasetBuilder, RandomIdentitySampler
 from loss import LossBuilder
 from model import ModelBuilder
 from torch.utils.data import DataLoader
-from training import Trainer
+from train import Trainer
 
 def main(config):
 
@@ -27,6 +31,7 @@ def main(config):
     pretrained = model_config['pretrained']
     
     # Training parameters
+    output_dir = training_config['output_dir']
     batch_size = training_config['batch_size']
     num_workers = training_config['num_workers']
     
@@ -42,12 +47,21 @@ def main(config):
     apply_MALW = loss_config['apply_MALW']
     # =====================================
 
+    print("|***************************************************|")
+    print("|                   Vehicle Re-ID                   |")
+    print("|---------------------------------------------------|")
+    print("|             Made by: Gianmarco Scarano            |")
+    print("|       --- MSc Student at AI & Robotics ---        |")
+    print("|      --- University of Rome, La Sapienza ---      |")
+    print("|         ---        Rome, Italy        ---         |")
+    print("|***************************************************|")
+
     if(torch.cuda.is_available()):
         print('Cuda available: {}'.format(torch.cuda.is_available()))
         if (torch.cuda.device_count() > 1):
             print(f"Detected multiple GPUs. Devices: {torch.cuda.device_count()}")
-            print("Using the first GPU available...")
-        device = torch.device("cuda:0")
+            print(f"Using the GPU number: {device.split(':')[1]}")
+        device = torch.device(device=device)
         
         print("GPU: " + torch.cuda.get_device_name(device))
         print("Total memory: {:.1f} GB".format((float(torch.cuda.get_device_properties(device).total_memory / (1024 ** 3)))))
@@ -88,32 +102,19 @@ def main(config):
                             shuffle=False,
                             collate_fn=val_dataset.val_collate_fn,
                             num_workers=num_workers)
-
-    # # Get a simple batch from train loader and print the image
-    # print("\nVisualizing a batch of images...")
-    # img_path, img, car_id, cam_id, model_id, color_id, type_id, timestamp = next(iter(train_loader))
-
-    # # Convert to numpy and transpose dimensions
-    # img_np = img[0].permute(1, 2, 0).numpy()  # Shape: [320, 320, 3]
     
-    # # Display the image
-    # plt.figure(figsize=(8, 8))
-    # plt.title(f"CarID: {car_id[0].item()}, CamID: {cam_id[0].item()} | Timestamp: {timestamp[0]}")
-    # plt.imshow(img_np)
-    # plt.axis('off') # Hide axes
-    # plt.show()
-
     print("--------------------")
     print(f"Building {model} model...")
     model_builder = ModelBuilder(
         model_name=model,
         pretrained=pretrained,
-        num_classes=num_classes[dataset_name]
+        num_classes=num_classes[dataset_name],
+        model_config=model_config
     )
 
     # Get the model and move it to the device
-    model = model_builder.move_to(device)
-
+    model = model_builder.move_to(device)      
+   
     # Print model summary
     print("--------------------")
     print(f"Model successfully built!")
@@ -129,6 +130,17 @@ def main(config):
     # Define the loss function
     loss_fn = LossBuilder(alpha=alpha, k=k, margin=margin, label_smoothing=label_smoothing, apply_MALW=apply_MALW)
 
+    # Create the output directory and save the config file
+    print("Creating the output directory...")
+    if(os.path.exists(output_dir) == False):
+        os.makedirs(output_dir)
+        print(f"Output directory created: {output_dir}")
+    
+    # Save the config file
+    output_config = os.path.join(output_dir, 'config.yml')
+    shutil.copy('config.yml', output_config)
+    print(f"Config file saved to: {output_config}")
+    
     # Create the Trainer
     trainer = Trainer(
         model=model,
@@ -140,15 +152,17 @@ def main(config):
     )
     trainer.run()
 
+# Usage: python main.py <path_to_config.yml>
 if __name__ == '__main__':
-    # import sys
-    # if len(sys.argv) != 2:
-    #     print("Usage: python script.py <path_to_config.json>")
-    #     sys.exit(1)
-    # main(sys.argv[1])
-
+    config_file = 'config.yml'
+    if len(sys.argv) != 2:
+        print("You might be using an IDE to run the script. Running with default config file: 'config.yml'")
+    else:
+        config_file = sys.argv[1]
+        
     # Parameters from config.yml file
-    with open('config.yml', 'r') as f:
+    with open(config_file, 'r') as f:
         config = yaml.load(f, yaml.FullLoader)['reid']
-
+    
+    # Run the main function
     main(config)

@@ -1,46 +1,16 @@
+import os
 from typing import Optional
 
 import numpy as np
 import torch
-from evaluate import eval_func
-from torch.optim.lr_scheduler import _LRScheduler
+from misc.utils import euclidean_dist, eval_func, load_model, save_model
 from tqdm import tqdm
-from utils import euclidean_dist
-
-class WarmupDecayLR(_LRScheduler):
-    def __init__(self, optimizer, milestones, warmup_epochs=10, warmup_gamma=0.6, decay_method="linear", last_epoch=-1):
-        self.milestones = sorted(milestones)
-        self.warmup_epochs = warmup_epochs
-        self.warmup_gamma = warmup_gamma
-        self.decay_method = decay_method
-        super(WarmupDecayLR, self).__init__(optimizer, last_epoch)
-
-    def get_lr(self):
-        # Warmup phase
-        if self.last_epoch < self.warmup_epochs:
-            return [base_lr * ((self.last_epoch + 1) / self.warmup_epochs) for base_lr in self.base_lrs]
-        
-        # Milestone decay phase
-        elif(self.decay_method == "linear"): 
-            return [base_lr * (self.warmup_gamma ** len([m for m in self.milestones if m <= self.last_epoch]))
-                    for base_lr in self.base_lrs]
-        
-        # Smooth decay phase
-        else:
-            return [self._get_smooth_lr(base_lr) for base_lr in self.base_lrs]
-
-    def _get_smooth_lr(self, base_lr):
-        if self.last_epoch < self.milestones[0]:
-            return base_lr
-        for i in range(len(self.milestones) - 1):
-            if self.milestones[i] <= self.last_epoch < self.milestones[i+1]:
-                t = (self.last_epoch - self.milestones[i]) / (self.milestones[i+1] - self.milestones[i])
-                return base_lr * (self.warmup_gamma ** i) * (self.warmup_gamma ** t)
-        return base_lr * (self.warmup_gamma ** len(self.milestones))
+from training.scheduler import WarmupDecayLR
 
 class Trainer:
     def __init__(self, model: torch.nn.Module, dataloaders, val_interval, loss_fn: torch.Tensor, train_configs, device='cuda'):
         self.model = model
+        self.device = device
         self.train_loader = dataloaders['train']
         self.val_loader, self.num_query = dataloaders['val']
         self.val_interval = val_interval
@@ -48,14 +18,17 @@ class Trainer:
         self.epochs = train_configs['epochs']
         self.learning_rate = train_configs['learning_rate']
         self.log_interval = train_configs['log_interval']
-        self.device = device
+        self.output_dir = train_configs['output_dir']
+        self.load_checkpoint = train_configs['load_checkpoint']
+        self.use_warmup = train_configs['use_warmup']
 
+        self.start_epoch = 0
         self.running_loss = []
         self.running_id_loss = []
         self.running_metric_loss = []
         self.acc_list = []
 
-        if(self.learning_rate is not None):
+        if (self.learning_rate is not None):
             # Update the weights decay and learning rate for the model
             model_params = []
             for key, value in self.model.named_parameters():
@@ -66,22 +39,32 @@ class Trainer:
                 if "bias" in key:
                     lr = self.learning_rate * train_configs['bias_lr_factor']
                     weight_decay = train_configs['weight_decay_bias']
-                model_params += [{"params": [value], "lr": lr, "weight_decay": weight_decay}]
-                
+                model_params += [{"params": [value],
+                                  "lr": lr, "weight_decay": weight_decay}]
+
             # Create the optimizer
             self.optimizer = torch.optim.Adam(model_params, lr=self.learning_rate)
 
-            # For Learning Rate Warm-up and Decay
-            # We first warm-up the LR up for a few epochs, so that it reaches the desired LR
-            # Then, we decay the LR using the milestones or a smooth decay
-            self.scheduler_warmup = WarmupDecayLR(
-                optimizer=self.optimizer,
-                milestones=train_configs['steps'],
-                warmup_epochs=train_configs['warmup_epochs'],
-                warmup_gamma=train_configs['warmup_gamma'],
-                decay_method=train_configs['decay_method']
-            )
-
+            if (self.use_warmup):
+                # For Learning Rate Warm-up and Decay
+                # We first warm-up the LR up for a few epochs, so that it reaches the desired LR
+                # Then, we decay the LR using the milestones or a smooth decay
+                self.scheduler_warmup = WarmupDecayLR(
+                    optimizer=self.optimizer,
+                    milestones=train_configs['steps'],
+                    warmup_epochs=train_configs['warmup_epochs'],
+                    warmup_gamma=train_configs['warmup_gamma'],
+                    decay_method=train_configs['decay_method']
+                )
+            else:
+                self.scheduler_warmup = torch.optim.lr_scheduler.MultiStepLR(
+                    self.optimizer, milestones=train_configs['steps'], gamma=train_configs['warmup_gamma'])
+            
+            # Check if load checkpoint is not False. If it is not False, check if the string is not empty, then load the model
+            if(self.load_checkpoint != False and self.load_checkpoint != ''):
+                self.model, self.optimizer, self.scheduler_warmup, self.start_epoch = load_model(
+                    self.load_checkpoint, self.model, self.optimizer, self.scheduler_warmup, self.device)
+                
     def empty_lists(self):
         self.running_loss = []
         self.running_id_loss = []
@@ -89,33 +72,39 @@ class Trainer:
         self.acc_list = []
 
     def run(self):
-        for epoch in range(self.epochs):
-            self.empty_lists() # Empty the lists for each epoch
-            
+        for epoch in range(self.start_epoch, self.epochs):
+            self.empty_lists()  # Empty the lists for each epoch
+
             # Train the model
             self.train(epoch)
 
             # Update learning rate
             self.scheduler_warmup.step()
-            
+
             # Log the current learning rate
             opt_lr = self.scheduler_warmup.optimizer.param_groups[0]['lr']
-            
-            if(epoch > 0 and epoch % self.val_interval == 0):
+
+            if (epoch > 0 and epoch % self.val_interval == 0):
                 self.validate(epoch, save_results=True)
 
             print(f"Epoch {epoch}/{self.epochs} | LR: {opt_lr:.2e}\n"
-                f"\t - ID Loss: {np.mean(self.running_id_loss):.4f}\n"
-                f"\t - Metric Loss: {np.mean(self.running_metric_loss):.4f}\n"
-                f"\t - Loss (ID + Metric): {np.mean(self.running_loss):.4f}\n"
-                f"\t - Accuracy: {np.mean(self.acc_list):.4f}\n")
-      
-            # Save the model
-            torch.save(self.model.state_dict(), f'model_ep-{epoch}_loss-{np.mean(self.running_loss):.4f}.pth')
-      
+                  f"\t - ID Loss: {np.mean(self.running_id_loss):.4f}\n"
+                  f"\t - Metric Loss: {np.mean(self.running_metric_loss):.4f}\n"
+                  f"\t - Loss (ID + Metric): {np.mean(self.running_loss):.4f}\n"
+                  f"\t - Accuracy: {np.mean(self.acc_list):.4f}\n")
+
+            # Save the model every epoch
+            save_model({
+                'epoch': epoch,
+                'model': self.model.state_dict(),
+                'optimizer': self.optimizer.state_dict(),
+                'scheduler': self.scheduler_warmup.state_dict(),
+                'loss': np.mean(self.running_loss),
+            }, self.output_dir, model_path=f'model_ep-{epoch}_loss-{np.mean(self.running_loss):.4f}.pth')
+
     def train(self, epoch):
         self.model.train()
-           
+
         for i, (img_path, img, car_id, cam_id, model_id, color_id, type_id, timestamp) in tqdm(enumerate(self.train_loader), total=len(self.train_loader), desc=f"Epoch {epoch}/{self.epochs}"):
             img, car_id = img.to(self.device), car_id.to(self.device)
 
@@ -125,42 +114,46 @@ class Trainer:
             # Up to the last Linear layer for the ID prediction (ID loss)
             # Up to the last Conv layer for the Embeddings (Metric loss)
             embeddings, pred_ids = self.model(img, training=True)
-            
+
+            # Loss
             ID_loss, metric_loss = self.loss_fn(embeddings, pred_ids, car_id)
-            loss = ID_loss + metric_loss[0]
+            loss = ID_loss + metric_loss
+
+            # Accuracy
             accuracy = (torch.max(pred_ids, 1)[1] == car_id).float().mean()
 
             loss.backward()
             self.optimizer.step()
-            
+
             self.running_loss.append(loss.detach().cpu().item())
             self.running_id_loss.append(ID_loss.detach().cpu().item())
-            self.running_metric_loss.append(metric_loss[0].detach().cpu().item())
+            self.running_metric_loss.append(metric_loss.detach().cpu().item())
             self.acc_list.append(accuracy.detach().cpu().item())
-            
-            if(i % self.log_interval == 0):
+
+            if (i % self.log_interval == 0):
                 print(f"\tIteration[{i}/{len(self.train_loader)}] "
-                    f"Loss: {np.mean(self.running_loss):.4f} | "
-                    f"ID Loss: {np.mean(self.running_id_loss):.4f} | "
-                    f"Metric Loss: {np.mean(self.running_metric_loss):.4f} | "
-                    f"Accuracy: {np.mean(self.acc_list):.4f} | "
-                    f"LR: {self.scheduler_warmup.get_lr()[0]:.2e}")            
+                      f"Loss: {np.mean(self.running_loss):.4f} | "
+                      f"ID Loss: {np.mean(self.running_id_loss):.4f} | "
+                      f"Metric Loss: {np.mean(self.running_metric_loss):.4f} | "
+                      f"Accuracy: {np.mean(self.acc_list):.4f} | "
+                      f"LR: {self.scheduler_warmup.get_lr()[0]:.2e}")
 
     def validate(self, epoch: Optional[int] = 0, save_results=False):
         self.model.eval()
         num_query = self.num_query
         features, car_ids, cam_ids, paths = [], [], [], []
-        
+
         with torch.no_grad():
             for i, (img_path, img, car_id, cam_id, model_id, color_id, type_id, timestamp) in tqdm(enumerate(self.val_loader), total=len(self.val_loader), desc="Running Validation"):
-                img, car_id, cam_id = img.to(self.device), car_id.to(self.device), cam_id.to(self.device)
-                
+                img, car_id, cam_id = img.to(self.device), car_id.to(
+                    self.device), cam_id.to(self.device)
+
                 feat = self.model(img, training=False).detach().cpu()
                 features.append(feat)
                 car_ids.append(car_id)
                 cam_ids.append(cam_id)
                 paths.extend(img_path)
-                
+
         features = torch.cat(features, dim=0)
         car_ids = torch.cat(car_ids, dim=0)
         cam_ids = torch.cat(cam_ids, dim=0)
@@ -174,21 +167,21 @@ class Trainer:
         gallery_pid = car_ids[num_query:]
         gallery_camid = cam_ids[num_query:]
         gallery_path = np.array(paths[num_query:])
-        
+
         distmat = euclidean_dist(query_feat, gallery_feat)
 
-        cmc, mAP, _ = eval_func(distmat.numpy(), query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(), 
-                             query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(), max_rank=10)
-        
+        cmc, mAP, _ = eval_func(distmat.numpy(), query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(),
+                                query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(), max_rank=10)
+
         CMC_RANKS = [1, 3, 5, 10]
         for r in CMC_RANKS:
             print('\t - CMC Rank-{}: {:.2%}'.format(r, cmc[r-1]))
         print('\t - mAP: {:.2%}'.format(mAP))
         print('\t ----------------------')
-        
-        if(save_results):
+
+        if (save_results):
             # Append the results to a file
-            with open('results-val.txt', 'a') as f:
+            with open(os.path.join(self.output_dir, 'results-val.txt'), 'a') as f:
                 f.write(f"Epoch {epoch}\n"
                         f"\t - CMC Rank-1: {cmc[CMC_RANKS[0]-1]:.2%}\n"
                         f"\t - CMC Rank-3: {cmc[CMC_RANKS[1]-1]:.2%}\n"
