@@ -12,6 +12,16 @@ from train import Trainer
 
 def main(config):
 
+    print("|***************************************************|")
+    print("|                   Vehicle Re-ID                   |")
+    print("|                        TEST                       |")
+    print("|---------------------------------------------------|")
+    print("|             Made by: Gianmarco Scarano            |")
+    print("|       --- MSc Student at AI & Robotics ---        |")
+    print("|      --- University of Rome, La Sapienza ---      |")
+    print("|         ---        Rome, Italy        ---         |")
+    print("|***************************************************|")
+
     # ============= VARIABLES =============
     dataset_config = config['dataset']
     model_config = config['model']
@@ -28,7 +38,6 @@ def main(config):
     device = model_config['device']
     model = model_config['model']
     pretrained = model_config['pretrained']
-    model_val_path = model_config['model_val_path']
         
     # Validation parameters
     batch_size_val = val_config['batch_size']
@@ -36,6 +45,7 @@ def main(config):
     # Test parameters
     run_reid_metrics = test_config['run_reid_metrics']
     normalize_embeddings = test_config['normalize_embeddings']
+    model_val_path = test_config['model_val_path']
     # =====================================
 
     num_classes = {
@@ -49,7 +59,8 @@ def main(config):
     model_builder = ModelBuilder(
         model_name=model,
         pretrained=pretrained,
-        num_classes=num_classes[dataset_name]
+        num_classes=num_classes[dataset_name],
+        model_config=model_config
     )
 
     # Get the model and move it to the device
@@ -109,24 +120,26 @@ def main(config):
         # Create the DataLoaders
         val_loader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=False, collate_fn=val_dataset.val_collate_fn, num_workers=0)
 
+        # Remove the learning rate from the training configs, so we do not initialize the optimizer and scheduler
+        training_configs['learning_rate'] = None 
+
         # Create the Trainer
-        training_configs['learning_rate'] = None
-        
         trainer = Trainer(
             model=model,
             val_interval=0,
             dataloaders={'train': None, 'val': {val_loader, len(dataset_builder.dataset.query)}},
             loss_fn=None,
             device=device,
-            train_configs=training_configs
+            train_configs=training_configs,
+            val_configs=val_config,
         )
-        trainer.validate(epoch=0, save_results=False)
+        trainer.validate(save_results=False)
     
 # Usage: python test.py <path_to_config.yml>
 if __name__ == '__main__':
     config_file = 'config.yml'
     if len(sys.argv) != 2:
-        print("You might be using an IDE to run the script. Running with default config file: 'config.yml'")
+        print("You might be using an IDE to run the script or forgot to append the config file. Running with default config file: 'config.yml'")
     else:
         config_file = sys.argv[1]
         

@@ -4,6 +4,7 @@ reid:
     data_path: "data"
     dataset_name: "veri-776"
     dataset_size: "small"
+    sampler_type: "random" # random | balanced | None
 
   # === MODEL CONFIGURATION ===
   model:
@@ -11,22 +12,22 @@ reid:
     pretrained: True
     device: "cuda:0"
     use_gem: False
-    use_stride: False
-    use_bottleneck: False
+    use_stride: True
+    use_bottleneck: True
 
   # === LOSS CONFIGURATION ===
   loss:
     alpha: 0.9
     k: 500
-    margin: 0.3
-    label_smoothing: 0.0
+    margin: 1.00
+    label_smoothing: 0.00
     apply_MALW: False
 
   # === TRAINING CONFIGURATION ===
   training:
-    epochs: 260
+    epochs: 160
     batch_size: 36
-    num_workers: 8
+    num_workers: 0
     output_dir: "results"
     # ===> Optimizer configuration
     learning_rate: 1.5e-4
@@ -34,11 +35,11 @@ reid:
     weight_decay: 0.0005
     weight_decay_bias: 0.0001
     # ===> Scheduler configuration (WarmupDecayLR)
-    use_warmup: False
+    use_warmup: True
     steps: [20, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 195, 210, 225, 240, 255]
     warmup_gamma: 0.6
     warmup_epochs: 10
-    decay_method: "linear"
+    decay_method: "smooth"
     log_interval: 100
     # ===> Loading checkpoint
     load_checkpoint: False # Could be also a path to a checkpoint
@@ -47,9 +48,10 @@ reid:
   validation:
     batch_size: 16
     val_interval: 5
+    re_ranking: True
 
   # === TEST CONFIGURATION ===
   test:
     normalize_embeddings: False
     run_reid_metrics: True
-    model_val_path: "model_ep-2_loss-1.0532.pth"
+    model_val_path: "results/Test-2/model_ep-60_loss-0.0182.pth"

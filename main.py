@@ -5,7 +5,7 @@ import sys
 import matplotlib.pyplot as plt
 import torch
 import yaml
-from dataset import DatasetBuilder, RandomIdentitySampler
+from dataset import BalancedIdentitySampler, DatasetBuilder, RandomIdentitySampler
 from loss import LossBuilder
 from model import ModelBuilder
 from torch.utils.data import DataLoader
@@ -24,6 +24,7 @@ def main(config):
     data_path = dataset_config['data_path']
     dataset_name = dataset_config['dataset_name']
     dataset_size = dataset_config['dataset_size']
+    sampler_type = dataset_config['sampler_type']
 
     # Model parameters
     device = model_config['device']
@@ -94,8 +95,15 @@ def main(config):
     print(f"Unique classes: {dataset_builder.dataset.get_unique_car_ids()}")
 
     # Create the DataLoaders
+    if sampler_type == 'random':
+        sampler = RandomIdentitySampler(dataset_builder.dataset.train, batch_size=batch_size, num_instances=6)
+    elif sampler_type == 'balanced':
+        sampler = BalancedIdentitySampler(dataset_builder.dataset.train, batch_size=batch_size, num_instances=6)
+    else:
+        sampler = None
+        
     train_loader = DataLoader(train_dataset, batch_size=batch_size,
-                              sampler=RandomIdentitySampler(dataset_builder.dataset.train, batch_size=batch_size, num_instances=6),
+                              sampler=sampler,
                               collate_fn=train_dataset.train_collate_fn,
                               num_workers=num_workers)
     val_loader = DataLoader(val_dataset, batch_size=batch_size_val,
@@ -148,7 +156,8 @@ def main(config):
         dataloaders={'train': train_loader, 'val': {val_loader, len(dataset_builder.dataset.query)}},
         loss_fn=loss_fn,
         device=device,
-        train_configs=training_config
+        train_configs=training_config,
+        val_configs=val_config,
     )
     trainer.run()
 
@@ -156,7 +165,7 @@ def main(config):
 if __name__ == '__main__':
     config_file = 'config.yml'
     if len(sys.argv) != 2:
-        print("You might be using an IDE to run the script. Running with default config file: 'config.yml'")
+        print("You might be using an IDE to run the script or forgot to append the config file. Running with default config file: 'config.yml'")
     else:
         config_file = sys.argv[1]
         

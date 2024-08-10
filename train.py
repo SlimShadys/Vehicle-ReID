@@ -3,25 +3,30 @@ from typing import Optional
 
 import numpy as np
 import torch
-from misc.utils import euclidean_dist, eval_func, load_model, save_model
+from misc.utils import euclidean_dist, eval_func, load_model, re_ranking, save_model
 from tqdm import tqdm
 from training.scheduler import WarmupDecayLR
 
 class Trainer:
-    def __init__(self, model: torch.nn.Module, dataloaders, val_interval, loss_fn: torch.Tensor, train_configs, device='cuda'):
+    def __init__(self, model: torch.nn.Module, dataloaders, val_interval, loss_fn: torch.Tensor, train_configs, val_configs, device='cuda'):
         self.model = model
         self.device = device
         self.train_loader = dataloaders['train']
         self.val_loader, self.num_query = dataloaders['val']
         self.val_interval = val_interval
         self.loss_fn = loss_fn
+        
+        # Training configurations
         self.epochs = train_configs['epochs']
         self.learning_rate = train_configs['learning_rate']
         self.log_interval = train_configs['log_interval']
         self.output_dir = train_configs['output_dir']
         self.load_checkpoint = train_configs['load_checkpoint']
         self.use_warmup = train_configs['use_warmup']
-
+        
+        # Validation configurations
+        self.re_ranking = val_configs['re_ranking']
+        
         self.start_epoch = 0
         self.running_loss = []
         self.running_id_loss = []
@@ -116,7 +121,7 @@ class Trainer:
             embeddings, pred_ids = self.model(img, training=True)
 
             # Loss
-            ID_loss, metric_loss = self.loss_fn(embeddings, pred_ids, car_id)
+            ID_loss, metric_loss = self.loss_fn(embeddings, pred_ids, car_id, normalize=False)
             loss = ID_loss + metric_loss
 
             # Accuracy
@@ -145,10 +150,10 @@ class Trainer:
 
         with torch.no_grad():
             for i, (img_path, img, car_id, cam_id, model_id, color_id, type_id, timestamp) in tqdm(enumerate(self.val_loader), total=len(self.val_loader), desc="Running Validation"):
-                img, car_id, cam_id = img.to(self.device), car_id.to(
-                    self.device), cam_id.to(self.device)
+                img, car_id, cam_id = img.to(self.device), car_id.to(self.device), cam_id.to(self.device)
 
                 feat = self.model(img, training=False).detach().cpu()
+
                 features.append(feat)
                 car_ids.append(car_id)
                 cam_ids.append(cam_id)
@@ -170,22 +175,45 @@ class Trainer:
 
         distmat = euclidean_dist(query_feat, gallery_feat)
 
-        cmc, mAP, _ = eval_func(distmat.numpy(), query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(),
-                                query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(), max_rank=10)
-
         CMC_RANKS = [1, 3, 5, 10]
+        cmc, mAP, _ = eval_func(distmat.numpy(), query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(),
+                                query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(), max_rank=max(CMC_RANKS), re_rank=False)
+
         for r in CMC_RANKS:
             print('\t - CMC Rank-{}: {:.2%}'.format(r, cmc[r-1]))
         print('\t - mAP: {:.2%}'.format(mAP))
         print('\t ----------------------')
 
+        if(self.re_ranking):
+            distmat_re = re_ranking(query_feat, gallery_feat, k1=80, k2=15, lambda_value=0.2)
+            
+            # if dataset == 'vehicleid':
+            #     cmc_re, mAP_re = evaluate_vid(distmat_re, q_pids, g_pids, q_camids, g_camids, 50)
+            # else:
+            cmc_re, mAP_re, _ = eval_func(distmat_re, query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(),
+                                    query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(), max_rank=max(CMC_RANKS), re_rank=True)
+            print('-- Re-Ranked Results --')
+            for r in CMC_RANKS:
+                print('\t - CMC Rank-{}: {:.2%}'.format(r, cmc_re[r-1]))
+            print('\t - mAP: {:.2%}'.format(mAP_re))
+            print('\t ----------------------')
+
         if (save_results):
             # Append the results to a file
             with open(os.path.join(self.output_dir, 'results-val.txt'), 'a') as f:
-                f.write(f"Epoch {epoch}\n"
-                        f"\t - CMC Rank-1: {cmc[CMC_RANKS[0]-1]:.2%}\n"
-                        f"\t - CMC Rank-3: {cmc[CMC_RANKS[1]-1]:.2%}\n"
-                        f"\t - CMC Rank-5: {cmc[CMC_RANKS[2]-1]:.2%}\n"
-                        f"\t - CMC Rank-10: {cmc[CMC_RANKS[3]-1]:.2%}\n"
-                        f"\t - mAP: {mAP:.2%}\n"
-                        f"\t ----------------------\n")
+                if(self.re_ranking):
+                    f.write(f"Epoch {epoch}\n"
+                            f"\t - CMC Rank-1: {cmc[CMC_RANKS[0]-1]:.2%} ({cmc_re[CMC_RANKS[0]-1]:.2%})\n"
+                            f"\t - CMC Rank-3: {cmc[CMC_RANKS[1]-1]:.2%} ({cmc_re[CMC_RANKS[1]-1]:.2%})\n"
+                            f"\t - CMC Rank-5: {cmc[CMC_RANKS[2]-1]:.2%} ({cmc_re[CMC_RANKS[2]-1]:.2%})\n"
+                            f"\t - CMC Rank-10: {cmc[CMC_RANKS[3]-1]:.2%} ({cmc_re[CMC_RANKS[3]-1]:.2%})\n"
+                            f"\t - mAP: {mAP:.2%} ({mAP_re:.2%})\n"
+                            f"\t ----------------------\n")
+                else:
+                    f.write(f"Epoch {epoch}\n"
+                            f"\t - CMC Rank-1: {cmc[CMC_RANKS[0]-1]:.2%}\n"
+                            f"\t - CMC Rank-3: {cmc[CMC_RANKS[1]-1]:.2%}\n"
+                            f"\t - CMC Rank-5: {cmc[CMC_RANKS[2]-1]:.2%}\n"
+                            f"\t - CMC Rank-10: {cmc[CMC_RANKS[3]-1]:.2%}\n"
+                            f"\t - mAP: {mAP:.2%}\n"
+                            f"\t ----------------------\n")

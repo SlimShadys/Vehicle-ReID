@@ -16,22 +16,24 @@ class LossBuilder(nn.Module):
         self.label_smoothing = label_smoothing  # Label smoothing factor
         self.apply_MALW = apply_MALW            # Apply MALW algorithm
 
-        # ID Loss -> Cross Entropy Loss
-        self.cross_entropy = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+        ## ============ ID Loss ============ ##
+        self.cross_entropy = nn.CrossEntropyLoss(label_smoothing=label_smoothing) # Cross Entropy Loss
         
-        # Metric Loss -> Triplet Loss
-        #self.triplet_loss = TripletLoss(self.margin, mining_method='batch_hard')
-        self.triplet_loss = TripletLoss(self.margin)
-        
-        # Metric Loss -> Supervised Contrastive Loss
+        ## =========== Metric Loss =========== ##
+        self.triplet_loss = TripletLoss(self.margin) # Triplet Loss
+
+        ## Supervised Contrastive Loss from Pytorch Metric Learning
         # self.distance = py_distances.CosineSimilarity()
         # self.miner = py_miners.TripletMarginMiner(margin=self.margin, distance=self.distance, type_of_triplets="semihard")
-        # self.triplet_loss = py_distances.SupConLoss()
+        # self.triplet_loss = py_losses.SupConLoss()
         
-        # Metric Loss -> TripletMarginLoss
+        ## Triplet Margin Loss from Pytorch Metric Learning
         # self.distance = py_distances.LpDistance()
         # self.miner = py_miners.BatchHardMiner(distance=self.distance)
-        # self.triplet_loss = py_distances.TripletMarginLoss(margin=self.margin)
+        # self.triplet_loss = py_losses.TripletMarginLoss(margin=self.margin)
+        
+        # Supervised Contrastive Loss from SupConLoss
+        # self.triplet_loss = SupConLoss(num_ids=6, views=6, contrast_mode='all')
 
         if(self.apply_MALW):
             self.alpha = alpha
@@ -48,19 +50,20 @@ class LossBuilder(nn.Module):
     # Paper: https://arxiv.org/pdf/2104.10850
     # Github: https://github.com/cybercore-co-ltd/track2_aicity_2021/blob/master/lib/layers/build.py#L42-L70
     # ================================================
-    def forward(self, embeddings: torch.Tensor, pred_ids: torch.Tensor, target_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, embeddings: torch.Tensor, pred_ids: torch.Tensor, target_ids: torch.Tensor, normalize: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
         # == Calculate the cross entropy loss (ID Loss)
         ID_loss = self.cross_entropy(pred_ids, target_ids)
 
-        # == Calculate the Supervised Contrastive Loss (Metric Loss)
+        # == Calculate the Triplet Loss (Metric Loss)
         metric_loss, _, _ = self.triplet_loss(embeddings, target_ids)
         
         # ONLY TO BE USED WITH MINER + SupConLoss / TripletMarginLoss from Pytorch Metric Learning
-        #(a1, p, n) = self.miner(embeddings, target_ids)
-        #metric_loss = self.triplet_loss(embeddings, target_ids, (a1, p, n)).mean()
+        # (a1, p, n) = self.miner(embeddings, target_ids)
+        # metric_loss = self.triplet_loss(embeddings, target_ids, (a1, p, n)).mean()
 
-        # embeddings = nn.functional.normalize(embeddings, p=2, dim=1) # Normalize embeddings for the Metric Loss
-
+        # Normalize embeddings for the Metric Loss
+        if normalize: embeddings = nn.functional.normalize(embeddings, p=2, dim=1)
+            
         if self.apply_MALW:
             # Apply MALW algorithm
             self.ID_losses.append(ID_loss.detach().cpu())
