@@ -3,7 +3,8 @@ from typing import Optional
 
 import numpy as np
 import torch
-from misc.utils import euclidean_dist, eval_func, load_model, re_ranking, save_model
+from misc.utils import (euclidean_dist, eval_func, load_model, re_ranking,
+                        save_model)
 from tqdm import tqdm
 from training.scheduler import WarmupDecayLR
 

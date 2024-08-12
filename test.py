@@ -67,11 +67,13 @@ def main(config):
     model = model_builder.move_to(device)
 
     # Load parameters from a .pth file
-    checkpoint = torch.load(model_val_path, map_location=device)
-    model.load_state_dict(checkpoint['model'])
+    if(model_val_path is not None):
+        checkpoint = torch.load(model_val_path, map_location=device)
+        model.load_state_dict(checkpoint['model'])
+        print(f"Successfully loaded model parameters from file: {model_val_path}")
+
     model.eval()
     print(model)
-    print(f"Successfully loaded model parameters from file: {model_val_path}")
 
     # Define the validation transformations
     transforms = Transformations()

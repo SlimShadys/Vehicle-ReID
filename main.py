@@ -5,11 +5,13 @@ import sys
 import matplotlib.pyplot as plt
 import torch
 import yaml
-from dataset import BalancedIdentitySampler, DatasetBuilder, RandomIdentitySampler
+from dataset import (BalancedIdentitySampler, DatasetBuilder,
+                     RandomIdentitySampler)
 from loss import LossBuilder
 from model import ModelBuilder
 from torch.utils.data import DataLoader
 from train import Trainer
+
 
 def main(config):
 

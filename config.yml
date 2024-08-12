@@ -8,7 +8,7 @@ reid:
 
   # === MODEL CONFIGURATION ===
   model:
-    model: "resnet50"
+    model: "resnet50_ibn_a" # 'resnet50' / 'resnet101' / 'resnet50_ibn_a' / 'resnet101_ibn_a'
     pretrained: True
     device: "cuda:0"
     use_gem: False
@@ -27,7 +27,7 @@ reid:
   training:
     epochs: 160
     batch_size: 36
-    num_workers: 0
+    num_workers: 8
     output_dir: "results"
     # ===> Optimizer configuration
     learning_rate: 1.5e-4

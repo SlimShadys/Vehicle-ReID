@@ -1,50 +1,79 @@
-import torchvision.models as models
-from models.resnet import ResNet
+import torch.nn as nn
+from models.layers import Bottleneck_IBN
+from models.resnet import ResNet, ResNet_IBN
+
+resnet_urls = {
+    'resnet18': "https://download.pytorch.org/models/resnet18-f37072fd.pth",
+    'resnet34': "https://download.pytorch.org/models/resnet34-b627a593.pth",
+    'resnet50': "https://download.pytorch.org/models/resnet50-11ad3fa6.pth",
+    'resnet101': "https://download.pytorch.org/models/resnet101-cd907fc2.pth",
+    'resnet152': "https://download.pytorch.org/models/resnet152-f82ba261.pth",
+    'resnet50_ibn_a': "https://github.com/XingangPan/IBN-Net/releases/download/v1.0/resnet50_ibn_a-d9d0bb7b.pth",
+    'resnet101_ibn_a': "https://github.com/XingangPan/IBN-Net/releases/download/v1.0/resnet101_ibn_a-59ea0ac6.pth"
+}
 
 class ModelBuilder:
     def __init__(self, model_name='resnet50', pretrained=True, num_classes=1000, model_config=None):
         self.model_name = model_name.lower()
         self.pretrained = pretrained
         self.num_classes = num_classes
-        self.model_config = model_config
+        self.model_config = model_config or {}
         
-        if('resnet' in self.model_name):
-            self.model = self.build_resnet()
-        elif('vit' in self.model_name):
-            raise NotImplementedError("ViT model is not implemented yet")
-            self.model = self.build_vit()
-        else:
-            raise ValueError(f"Unsupported model name: {self.model_name}")
+        # Define the various model builders
+        # - resnet  : ResNet family
+        # - vit     : Vision Transformer (ViT)
+        self.model_builders = {
+            'resnet': self.build_resnet,
+            'vit': self.build_vit,
+        }
+        
+        # Supported ResNet models
+        self.resnet_models = list(resnet_urls.keys())
+        
+        # Build the whole model
+        self.model = self.build_model()
 
+    # General Model Builder helper function
+    def build_model(self) -> nn.Module:
+        for model_type, builder in self.model_builders.items():
+            if model_type in self.model_name:
+                return builder()
+        raise ValueError(f"Unsupported model name: {self.model_name}")
+
+    # Specific Model Builder for ResNet family
     def build_resnet(self):
-        # Load the proper weights
-        if(self.pretrained):
-            weights = models.ResNet50_Weights.DEFAULT
+        if self.model_name not in self.resnet_models:
+            raise ValueError(f"Unsupported ResNet model: {self.model_name}")
+                
+        if 'ibn' in self.model_name:
+            if self.model_name == 'resnet50_ibn_a':
+                layers = [3, 4, 6, 3]
+            elif self.model_name == 'resnet101_ibn_a':
+                layers = [3, 4, 23, 3]
+            else:
+                raise ValueError(f"Unsupported IBN model: {self.model_name}")
+            
+            return ResNet_IBN(block=Bottleneck_IBN,
+                                    layers=layers,
+                                    num_classes=self.num_classes,
+                                    fc_dims=None,
+                                    dropout_p=None,
+                                    use_gem=self.model_config.get('use_gem', False),
+                                    use_stride=self.model_config.get('use_stride', False),
+                                    use_bottleneck=self.model_config.get('use_bottleneck', False),
+                                    pretrained=(self.pretrained, resnet_urls[self.model_name]))
         else:
-            weights = None
-        
-        # Get the base model
-        if self.model_name == 'resnet18':
-            base_model = models.resnet18(weights=weights)
-        elif self.model_name == 'resnet34':
-            base_model = models.resnet34(weights=weights)
-        elif self.model_name == 'resnet50':
-            base_model = models.resnet50(weights=weights)
-        elif self.model_name == 'resnet101':
-            base_model = models.resnet101(weights=weights)
-        elif self.model_name == 'resnet152':
-            base_model = models.resnet152(weights=weights)
-        else:
-            raise ValueError(f"Unsupported model name: {self.model_name}")
-        return ResNet(base_model,
-                      self.num_classes,
-                      use_gem=self.model_config['use_gem'],
-                      use_stride=self.model_config['use_stride'],
-                      use_bottleneck=self.model_config['use_bottleneck'])
-    
+            return ResNet(self.model_name,
+                          self.num_classes,
+                          use_gem=self.model_config.get('use_gem', False),
+                          use_stride=self.model_config.get('use_stride', False),
+                          use_bottleneck=self.model_config.get('use_bottleneck', False),
+                          pretrained=(self.pretrained, resnet_urls[self.model_name]))
+
+    # Specific Model Builder for Vision Transformer
     def build_vit(self):
         raise NotImplementedError("ViT model is not implemented yet")
-    
+
     def move_to(self, device):
         self.model = self.model.to(device)
         return self.model

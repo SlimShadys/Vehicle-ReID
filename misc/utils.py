@@ -4,8 +4,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.model_zoo as model_zoo
 from PIL import Image
-from torch.nn.parameter import Parameter
 from tqdm import tqdm
 
 def read_image(img_path):
@@ -259,19 +259,14 @@ def load_model(model_path: str,
     print(f"Correctly loaded the model, optimizer, and scheduler from: {model_path}")
     return model, optimizer, scheduler_warmup, start_epoch
 
-'''
-Generalized Mean Pooling (GeM)
-Taken from:
-    => https://github.com/amaarora/amaarora.github.io/blob/master/nbs/GeM%20Pooling.ipynb
-'''
-class GeM(nn.Module):
-    def __init__(self, p=3.0, eps=1e-6):
-        super(GeM, self).__init__()
-        self.p = Parameter(torch.ones(1) * p)
-        self.eps = eps
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.adaptive_avg_pool2d(
-                x.clamp(min=self.eps).pow(self.p), # Input
-                                            (1, 1) # Output size
-                ).pow(1./self.p)
+def init_pretrained_weights(model, model_url):
+    """
+    Initialize model with pretrained weights.
+    Layers that don't match with pretrained layers in name or size are kept unchanged.
+    """
+    pretrain_dict = model_zoo.load_url(model_url)
+    model_dict = model.state_dict()
+    pretrain_dict = {k: v for k, v in pretrain_dict.items() if k in model_dict and model_dict[k].size() == v.size()}
+    model_dict.update(pretrain_dict)
+    model.load_state_dict(model_dict)
+    print('Initialized model with pretrained weights from {}'.format(model_url))
