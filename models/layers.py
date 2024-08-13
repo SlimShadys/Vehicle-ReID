@@ -3,12 +3,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.parameter import Parameter
 
-'''
-Generalized Mean Pooling (GeM)
-Taken from:
-    => https://github.com/amaarora/amaarora.github.io/blob/master/nbs/GeM%20Pooling.ipynb
-'''
 class GeM(nn.Module):
+    '''
+    Generalized Mean Pooling (GeM)
+    Taken from:
+        => https://github.com/amaarora/amaarora.github.io/blob/master/nbs/GeM%20Pooling.ipynb
+    '''
     def __init__(self, p=3.0, eps=1e-6):
         super(GeM, self).__init__()
         self.p = Parameter(torch.ones(1) * p)
@@ -21,6 +21,9 @@ class GeM(nn.Module):
                 ).pow(1./self.p)
 
 class IBN(nn.Module):
+    '''
+    IBN (Instance-Batch Normalization) Layer
+    '''
     def __init__(self, planes):
         super(IBN, self).__init__()
         half1 = int(planes / 2)
@@ -37,6 +40,9 @@ class IBN(nn.Module):
         return out
 
 class Bottleneck_IBN(nn.Module):
+    '''
+    ResNet Bottleneck with IBN Layer instead of BatchNorm
+    '''
     expansion = 4
 
     def __init__(self, inplanes, planes, ibn=False, stride=1, downsample=None):

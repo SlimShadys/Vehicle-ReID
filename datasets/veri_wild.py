@@ -1,11 +1,13 @@
 import os
 
 class VeriWild():
-    def __init__(self, data_path, dataset_size='small'):
+    def __init__(self, data_path, dataset_size='small', use_rptm=False):
         # Generic variables
+        self.dataset_name = 'veri_wild'
         self.data_path = os.path.join(data_path, 'VeRi-Wild')
         self.dataset_sizes = {'small': 3000, 'medium': 5000, 'large': 10000} # Number of test images - 3000 (Small), 5000 (Medium), 10000 (Large)
         self.num_test = self.dataset_sizes[dataset_size]
+        self.use_rptm = False
 
         self.vehicle_infos = self.get_vehicle_infos(os.path.join(self.data_path, 'train_test_split', 'vehicle_info.txt'))
 
@@ -26,13 +28,13 @@ class VeriWild():
         all_pids = {}
         relabeled_dataset = []
         for item in dataset:
-            img_path, vehicle_id, camera_id, model_id, color_id, type_id, timestamp = item
+            img_path, folder, vehicle_id, camera_id, model_id, color_id, type_id, timestamp = item
 
             if vehicle_id not in all_pids:
                 all_pids[vehicle_id] = len(all_pids)
 
             new_id = all_pids[vehicle_id]
-            relabeled_dataset.append((img_path, new_id, camera_id, model_id, color_id, type_id, timestamp))
+            relabeled_dataset.append((img_path, folder, new_id, camera_id, model_id, color_id, type_id, timestamp))
         return relabeled_dataset
 
     def get_vehicle_infos(self, file_path):
@@ -110,7 +112,9 @@ class VeriWild():
             except StopIteration:
                 print(f"No matching row found for vehicle_img {vehicle_img}")
 
-            dataset.append((os.path.join(self.img_dir, line[0]),
+            # (img_path, folder, car_id, cam_id, model_id, color_id, type_id, timestamp)
+            dataset.append((os.path.join(self.img_dir, line[0]), # img_path
+                            None, # Folder | Not necessary for this dataset as we do not have the GMS features
                             result['vehicle_ID'],
                             result['camera_ID'],
                             result['model_ID'], # result['model_name'] -> If we want the string name of the model
@@ -121,6 +125,6 @@ class VeriWild():
 
     def get_unique_car_ids(self):
         # Combine all car IDs from train, query, and gallery sets
-        all_car_ids = {car_id for _, car_id, _, _, _, _, _ in self.train}
+        all_car_ids = {car_id for _, _, car_id, _, _, _, _, _ in self.train}
         # Get the unique car IDs
         return len(all_car_ids)

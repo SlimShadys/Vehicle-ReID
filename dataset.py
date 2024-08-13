@@ -1,4 +1,6 @@
 import copy
+import os
+import pickle
 import random
 from collections import defaultdict
 from typing import List, Optional
@@ -14,7 +16,7 @@ from torch.utils.data import Dataset
 from torch.utils.data.sampler import Sampler
 
 class DatasetBuilder():
-    def __init__(self, data_path, dataset_name, dataset_size='small'):
+    def __init__(self, data_path, dataset_name, dataset_size='small', use_rptm=False, augmentation_configs=None):
         """
         Args:
             data_path (string): Path to the data file.
@@ -23,32 +25,54 @@ class DatasetBuilder():
         self.data_path = data_path
         self.dataset_name = dataset_name
         self.dataset_size = dataset_size
+        self.use_rptm = use_rptm # Whether to use RPTM Training
 
-        # For veri-776 dataset, there is not a specific dataset type
-        # For veri-wild and vehicle-id, there are three types: small, medium, large
-        if self.dataset_name == 'veri-776':
-            self.dataset = Veri776(self.data_path)
-        elif self.dataset_name == 'veri-wild':
-            self.dataset = VeriWild(self.data_path, self.dataset_size)
+        # For veri_776 dataset, there is not a specific dataset type
+        # For veri_wild and vehicle-id, there are three types: small, medium, large
+        if self.dataset_name == 'veri_776':
+            self.dataset = Veri776(self.data_path, self.use_rptm)
+        elif self.dataset_name == 'veri_wild':
+            self.dataset = VeriWild(self.data_path, self.dataset_size, False)
         elif self.dataset_name == 'vehicle-id':
-            self.dataset = VehicleID(self.data_path, self.dataset_size)
+            self.dataset = VehicleID(self.data_path, self.dataset_size, self.use_rptm)
         else:
             raise ValueError(f"Unknown dataset: {self.dataset_name}")
         
         # Transformations for the dataset
-        self.transforms = Transformations(dataset=self.dataset_name)
+        self.transforms = Transformations(dataset=self.dataset_name, configs=augmentation_configs)
         
         # Create the train and validation datasets
-        self.train_set = ImageDataset(self.dataset.train, transform=self.transforms.get_train_transform())
-        self.validation_set = ImageDataset(self.dataset.query + self.dataset.gallery, transform=self.transforms.get_val_transform())
+        self.train_set = ImageDataset(overall_dataset = self.dataset,
+                                      data = self.dataset.train,
+                                      pkl_file = self.dataset.pkl_file,
+                                      transform = self.transforms.get_train_transform(),
+                                      train = True)
+        self.validation_set = ImageDataset(overall_dataset = self.dataset,
+                                           data = self.dataset.query + self.dataset.gallery,
+                                           pkl_file = None,
+                                           transform = self.transforms.get_val_transform(),
+                                           train=False)
 
 class ImageDataset(Dataset):
-    def __init__(self, data, transform=None):
+    def __init__(self, overall_dataset, data, pkl_file, transform=None, train=True):
         """
         Args:
-            data (numpy array): Numpy array containing the data.
+            overall_dataset (object): The overall dataset object.
+            data (list): List of tuples containing the image path, folder, car_id, cam_id, model_id, color_id, type_id, timestamp.
+            pkl_file (string): The pickle file containing the indices for the dataset. (ONLY for RPTM Training)
             transform (callable, optional): Optional transform to be applied on a sample.
+            train (bool): Whether the dataset is for training or validation.
         """
+        self.train = train
+        self.overall_dataset = overall_dataset
+        self.dataset_name = overall_dataset.dataset_name
+        self.pkl_file = pkl_file
+        
+        # Load the index from the pickle file (Needed for RPTM Training)
+        if (self.overall_dataset.use_rptm) and (self.pkl_file is not None) and (self.train):
+            with open(os.path.join(self.overall_dataset.data_path, self.pkl_file), 'rb') as handle:
+                self.index = pickle.load(handle)
+        
         self.data = data
         self.transform = transform
 
@@ -56,7 +80,7 @@ class ImageDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx) -> tuple[str, torch.Tensor, int, int, int, int, int, str]:
-        img_path, car_id, cam_id, model_id, color_id, type_id, timestamp = self.data[idx]
+        img_path, folder, car_id, cam_id, model_id, color_id, type_id, timestamp = self.data[idx]
 
         # Read image in PIL format
         img = read_image(img_path)
@@ -64,28 +88,39 @@ class ImageDataset(Dataset):
         # Apply the transform if it exists
         if self.transform is not None:
             img = self.transform(img)
+        
+        # Custom indices for the dataset when using RPTM Training
+        if(self.overall_dataset.use_rptm) and (self.train):
+            if self.dataset_name == 'veri_776':
+                index = 0 if self.data[idx][0] not in self.index else self.index[self.data[idx][0]][1]
+            elif self.dataset_name == 'vehicle_id':
+                index = self.index[self.data[idx][0]][1]
+            else:
+                index = 0
+        else:
+            index = 0
 
-        return img_path, img, car_id, cam_id, model_id, color_id, type_id, timestamp
+        return img_path, img, folder, index, car_id, cam_id, model_id, color_id, type_id, timestamp
 
     def train_collate_fn(self, batch) -> tuple[list[str], torch.Tensor, torch.Tensor, torch.Tensor, int, int, int, str]:
-        img_paths, imgs, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps = zip(*batch)
+        img_paths, imgs, folders, indices, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps = zip(*batch)
 
         # Transform Car IDs and Images to Tensors
-        imgs = torch.stack(imgs, dim=0)                     # [batch_size, 3, 320, 320]
+        imgs = torch.stack(imgs, dim=0)                     # [batch_size, 3, height, width]
         car_ids = torch.tensor(car_ids, dtype=torch.int64)  # [batch_size]
         cam_ids = torch.tensor(cam_ids, dtype=torch.int64)
 
-        return img_paths, imgs, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps
+        return img_paths, imgs, folders, indices, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps
     
     def val_collate_fn(self, batch) -> tuple[list[str], torch.Tensor, torch.Tensor, torch.Tensor, int, int, int, str]:
-        img_paths, imgs, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps = zip(*batch)
+        img_paths, imgs, folders, indices, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps = zip(*batch)
 
         # Transform Car IDs and Images to Tensors
-        imgs = torch.stack(imgs, dim=0)                     # [batch_size, 3, 320, 320]
+        imgs = torch.stack(imgs, dim=0)                     # [batch_size, 3, height, width]
         car_ids = torch.tensor(car_ids, dtype=torch.int64)  # [batch_size]
         cam_ids = torch.tensor(cam_ids, dtype=torch.int64)
 
-        return img_paths, imgs, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps
+        return img_paths, imgs, folders, indices, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps
 
 class RandomIdentitySampler(Sampler):
     """
@@ -105,7 +140,7 @@ class RandomIdentitySampler(Sampler):
         self.index_dic = defaultdict(list)
         
         # img_path, car_id, cam_id, model_id, color_id, type_id, timestamp
-        for index, (_, pid, _, _, _, _, _) in enumerate(self.data_source):
+        for index, (_, _, pid, _, _, _, _, _) in enumerate(self.data_source):
             self.index_dic[pid].append(index)
         self.pids = list(self.index_dic.keys())
         self.num_identities = len(self.pids)  # Define num_identities here

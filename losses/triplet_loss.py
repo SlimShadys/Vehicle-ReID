@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from misc.utils import euclidean_dist, normalize
 
 class TripletLoss(object):
@@ -8,8 +7,9 @@ class TripletLoss(object):
     Related Triplet Loss theory can be found in paper 'In Defense of the Triplet
     Loss for Person Re-Identification'."""
 
-    def __init__(self, margin=None):
+    def __init__(self, margin=None, use_amp=False):
         self.margin = margin
+        self.use_amp = use_amp
         if margin is not None:
             self.ranking_loss = nn.MarginRankingLoss(margin=margin)
         else:
@@ -19,7 +19,7 @@ class TripletLoss(object):
         if normalize_feature:
             global_feat = normalize(global_feat, axis=-1)
             
-        dist_mat = euclidean_dist(global_feat, global_feat)
+        dist_mat = euclidean_dist(global_feat, global_feat, self.use_amp, train=True)
         dist_ap, dist_an, _, _ = self.hard_example_mining(dist_mat, labels, return_inds=False)
         y = dist_an.new().resize_as_(dist_an).fill_(1)
         
@@ -84,139 +84,38 @@ class TripletLoss(object):
             n_inds = None
         return dist_ap, dist_an, p_inds, n_inds
 
-# class TripletLoss(object):
-#     """Modified from Tong Xiao's open-reid (https://github.com/Cysu/open-reid).
-#     Related Triplet Loss theory can be found in paper 'In Defense of the Triplet
-#     Loss for Person Re-Identification'."""
-#     def __init__(self, margin=None, mining_method='batch_hard'):
-#         self.margin = margin
-#         self.mining_method = mining_method
-#         if margin is not None:
-#             self.ranking_loss = nn.MarginRankingLoss(margin=margin)
-#         else:
-#             self.ranking_loss = nn.SoftMarginLoss()
+class TripletLossV2(nn.Module):
+    def __init__(self, margin=0.3, use_amp=False):
+        super(TripletLossV2, self).__init__()
+        self.margin = margin
+        self.use_amp = use_amp
+        self.ranking_loss = nn.MarginRankingLoss(margin=margin)
 
-#     def __call__(self, global_feat, labels, normalize_feature=False):
-#         if normalize_feature:
-#             global_feat = normalize(global_feat, axis=-1)
-            
-#         # Compute L2 distance between features and find hard positive and negative samples
-#         dist_mat = euclidean_dist(global_feat, global_feat)
-#         dist_ap, dist_an, _, _ = self.hard_example_mining(dist_mat, labels, self.mining_method, return_inds=False)
+    def forward(self, inputs, targets):
+        """
+        Args:
+        - inputs: feature matrix with shape (batch_size, feat_dim)
+        - targets: ground truth labels with shape (num_classes)
+        """
+        n = inputs.size(0)
+
+        # Compute pairwise distance
+        dist = torch.pow(inputs, 2).sum(dim=1, keepdim=True).expand(n, n)
+        dist = dist + dist.t()
+        dist = dist.half() if self.use_amp else dist
+        dist.addmm_(inputs, inputs.t(), beta=1, alpha=-2)
+        dist = dist.clamp(min=1e-12).sqrt()  # for numerical stability
         
-#         # Compute ranking hinge loss
-#         y = dist_an.new().resize_as_(dist_an).fill_(1)
-#         if self.margin is not None:
-#             loss = self.ranking_loss(dist_an, dist_ap, y)
-#         else:
-#             loss = self.ranking_loss(dist_an - dist_ap, y)
-            
-#         return loss, dist_ap, dist_an
-    
-#     def hard_example_mining(self, dist_mat: torch.Tensor, labels: torch.Tensor, mining_method='batch_hard', return_inds=False):
-#         """For each anchor, find the hardest positive and negative sample.
-#         Args:
-#         dist_mat: pytorch Variable, pair wise distance between samples, shape [N, N]
-#         labels: pytorch LongTensor, with shape [N]
-#         mining_method: str, mining method for hard negative examples; choices: 'batch_hard', 'batch_sample', 'batch_soft'
-#         return_inds: whether to return the indices. Save time if `False`(?)
-#         Returns:
-#         dist_ap: pytorch Variable, distance(anchor, positive); shape [N]
-#         dist_an: pytorch Variable, distance(anchor, negative); shape [N]
-#         p_inds: pytorch LongTensor, with shape [N];
-#             indices of selected hard positive samples; 0 <= p_inds[i] <= N - 1
-#         n_inds: pytorch LongTensor, with shape [N];
-#             indices of selected hard negative samples; 0 <= n_inds[i] <= N - 1
-#         NOTE: Only consider the case in which all labels have same num of samples,
-#         thus we can cope with all anchors in parallel.
-#         """
-#         assert len(dist_mat.size()) == 2
-#         assert dist_mat.size(0) == dist_mat.size(1)
+        # For each anchor, find the hardest positive and negative
+        mask = targets.expand(n, n).eq(targets.expand(n, n).t())
+        dist_ap, dist_an = [], []
+        for i in range(n):
+            dist_ap.append(dist[i][mask[i]].max().unsqueeze(0))
+            dist_an.append(dist[i][mask[i] == 0].min().unsqueeze(0))
+        dist_ap = torch.cat(dist_ap)
+        dist_an = torch.cat(dist_an)
 
-#         N = dist_mat.size(0)
-#         device = dist_mat.device
-#         dist_ap, dist_an = [], []
-#         relative_p_inds, relative_n_inds = [], []
-
-#         # Shape [N, N]
-#         is_pos = labels.expand(N, N).eq(labels.expand(N, N).t())
-#         is_neg = labels.expand(N, N).ne(labels.expand(N, N).t())
-    
-#         # For each anchor, find the hardest positive and negative sample based on the mining method
-#         # 'dist_ap' means distance(anchor, positive)
-#         # 'dist_an' means distance(anchor, negative)
-#         # Distances will have shape [N, 1]
-#         for i in range(N):
-#             positive_mask = dist_mat[i][is_pos[i]]
-#             negative_mask = dist_mat[i][is_neg[i]]
-
-#             # Batch hard mining | Select the hardest positive and negative samples
-#             if mining_method == 'batch_hard':
-#                 if len(positive_mask) == 0:
-#                     dist_ap.append(torch.tensor([0.0], device=device))
-#                     relative_p_inds.append(torch.tensor([-1], device=device))
-#                     print('WARNING: No positive pair found for anchor point')
-#                 else:
-#                     max_pos_pair = positive_mask.max()
-#                     dist_ap.append(max_pos_pair.unsqueeze(0))
-#                     relative_p_inds.append(torch.where(dist_mat[i] == max_pos_pair)[0][0].unsqueeze(0))
-
-#                 if len(negative_mask) == 0:
-#                     dist_an.append(torch.tensor([0.0], device=device))
-#                     relative_n_inds.append(torch.tensor([-1], device=device))
-#                     print('WARNING: No negative pair found for anchor point')
-#                 else:
-#                     min_neg_pair = negative_mask.min()
-#                     dist_an.append(min_neg_pair.unsqueeze(0))
-#                     relative_n_inds.append(torch.where(dist_mat[i] == min_neg_pair)[0][0].unsqueeze(0))
-
-#             # Batch sample mining | Randomly sample positive and negative samples
-#             elif mining_method == 'batch_sample':
-#                 if len(positive_mask) == 0:
-#                     dist_ap.append(torch.tensor([0.0], device=device))
-#                     relative_p_inds.append(torch.tensor([-1], device=device))
-#                     print('WARNING: No positive pair found for anchor point')
-#                 else:
-#                     sampled_pos_idx = torch.multinomial(F.softmax(positive_mask, dim=0), num_samples=1)
-#                     dist_ap.append(positive_mask[sampled_pos_idx])
-#                     relative_p_inds.append(torch.where(is_pos[i])[0][sampled_pos_idx])
-
-#                 if len(negative_mask) == 0:
-#                     dist_an.append(torch.tensor([0.0], device=device))
-#                     relative_n_inds.append(torch.tensor([-1], device=device))
-#                     print('WARNING: No negative pair found for anchor point')
-#                 else:
-#                     sampled_neg_idx = torch.multinomial(F.softmin(negative_mask, dim=0), num_samples=1)
-#                     dist_an.append(negative_mask[sampled_neg_idx])
-#                     relative_n_inds.append(torch.where(is_neg[i])[0][sampled_neg_idx])
-
-#             # Batch soft mining | Softly select positive and negative samples
-#             elif mining_method == 'batch_soft':
-#                 if len(positive_mask) == 0:
-#                     dist_ap.append(torch.tensor([0.0], device=device))
-#                     relative_p_inds.append(torch.tensor([-1], device=device))
-#                     print('WARNING: No positive pair found for anchor point')
-#                 else:
-#                     weight_ap = torch.exp(positive_mask) / torch.exp(positive_mask).sum()
-#                     dist_ap.append((weight_ap * positive_mask).sum().unsqueeze(0))
-#                     relative_p_inds.append(torch.argmax(weight_ap).unsqueeze(0))
-
-#                 if len(negative_mask) == 0:
-#                     dist_an.append(torch.tensor([0.0], device=device))
-#                     relative_n_inds.append(torch.tensor([-1], device=device))
-#                     print('WARNING: No negative pair found for anchor point')
-#                 else:
-#                     weight_an = torch.exp(-negative_mask) / torch.exp(-negative_mask).sum()
-#                     dist_an.append((weight_an * negative_mask).sum().unsqueeze(0))
-#                     relative_n_inds.append(torch.argmax(weight_an).unsqueeze(0))
-
-#         # Stack the distances and indices
-#         dist_ap = torch.cat(dist_ap)
-#         dist_an = torch.cat(dist_an)
-#         relative_p_inds = torch.cat(relative_p_inds)
-#         relative_n_inds = torch.cat(relative_n_inds)
-
-#         if return_inds:
-#             return dist_ap, dist_an, relative_p_inds, relative_n_inds
-#         else:
-#             return dist_ap, dist_an, None, None
+        # Compute ranking hinge loss
+        y = torch.ones_like(dist_an)
+        loss = self.ranking_loss(dist_an, dist_ap, y)
+        return loss, dist_ap, dist_an

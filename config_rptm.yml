@@ -1,6 +1,6 @@
-# NOTE n.1 : If sampler_type 'random' or 'balanced' is selected, batch_size must be divisible by num_instances.
-# NOTE n.2 : If sampler_type 'random' or 'balanced' is selected, loss type must be TripletLoss.
-# NOTE n.3 : If use_rptm is True, loss must be TripletLossV2.
+# NOTE n.1 : If sampler_type 'random' or 'balanced' is selected, batch_size must be divisible by num_instances
+# NOTE n.2 : If sampler_type 'random' or 'balanced' is selected, loss type must be TripletLoss
+# NOTE n.3 : If use_rptm is True, loss must be TripletLossV2
 
 reid:
   seed: 2047315 # Seed for reproducibility
@@ -9,7 +9,7 @@ reid:
     data_path: "data"
     dataset_name: "veri_776" # veri_776 / veri_wild / vehicleid
     dataset_size: "small"
-    sampler_type: 'random' # random / balanced / ''
+    sampler_type: '' # random / balanced / ''
     num_instances: 6 # Only to be adjusted if sampler_type is either 'random' or 'balanced'
 
   # === MODEL CONFIGURATION ===
@@ -37,31 +37,31 @@ reid:
     
   # === LOSS CONFIGURATION ===
   loss:
-    type: "TripletLoss" # TripletLoss / TripletLossV2 / SupConLoss / SupConLoss_Pytorch / TripletMarginLoss_Pytorch
-    use_rptm: [False, 'mean']
+    type: "TripletLossV2" # TripletLoss / TripletLossV2 / SupConLoss / SupConLoss_Pytorch / TripletMarginLoss_Pytorch
+    use_rptm: [True, 'mean']
     alpha: 0.9
-    k: 2000
+    k: 1000
     margin: 1.00
     label_smoothing: 0.00
     apply_MALW: False
 
   # === TRAINING CONFIGURATION ===
   training:
-    epochs: 160
-    batch_size: 36
+    epochs: 80
+    batch_size: 20
     num_workers: 0
     output_dir: "results"
     use_amp: True
     # ===> Optimizer configuration
-    optimizer: "adam" # adam / sgd
-    learning_rate: 1.5e-4
+    optimizer: "sgd" # adam / sgd
+    learning_rate: 5.0e-3
     bias_lr_factor: 2
     weight_decay: 0.0005
     weight_decay_bias: 0.0001
     # ===> Scheduler configuration (WarmupDecayLR or MultiStepLR)
-    use_warmup: True
-    steps: [20, 30, 45, 60, 75, 90, 105, 120, 135, 150]
-    warmup_gamma: 0.6
+    use_warmup: False
+    steps: [20, 40, 60]
+    warmup_gamma: 0.1
     warmup_epochs: 10
     decay_method: "smooth"
     log_interval: 100
@@ -70,8 +70,8 @@ reid:
 
   # === VALIDATION CONFIGURATION ===
   validation:
-    batch_size: 16
-    val_interval: 5
+    batch_size: 100
+    val_interval: 1
     re_ranking: True
 
   # === TEST CONFIGURATION ===

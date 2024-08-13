@@ -1,6 +1,6 @@
 from torch.optim.lr_scheduler import _LRScheduler
 
-# Custom learning rate scheduler for warmup and decay.
+# Custom learning rate scheduler for warmup and decay (Linear or Smooth).
 class WarmupDecayLR(_LRScheduler):
     def __init__(self, optimizer, milestones, warmup_epochs=10, warmup_gamma=0.6, decay_method="linear", last_epoch=-1):
         self.milestones = sorted(milestones)

@@ -1,6 +1,9 @@
 # Ignore the data path (30+ GB)
 data/*
 
+# Ignore GMS files
+gms/*
+
 # Ignore tracking example video and YOLO models
 tracking/video/*
 tracking/output/*

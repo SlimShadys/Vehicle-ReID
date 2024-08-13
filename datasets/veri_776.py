@@ -1,15 +1,18 @@
 import glob
 import os
+import pickle
 import re
+import shutil
 import xml.etree.ElementTree as ET
 
 class Veri776():
-    def __init__(self, data_path):
+    def __init__(self, data_path, use_rptm=False):
         # Generic variables
+        self.dataset_name = 'veri_776'
         self.data_path = os.path.join(data_path, 'VeRi-776')
         self.train_labels = self.get_labels(os.path.join(self.data_path, 'train_label.xml'))
         self.test_labels = self.get_labels(os.path.join(self.data_path, 'test_label.xml'))
-
+        
         # Directories
         self.train_dir = os.path.join(self.data_path,'image_train')
         self.query_dir = os.path.join(self.data_path, 'image_query')
@@ -26,6 +29,43 @@ class Veri776():
         self.indices = self.get_indices('name_query.txt', 'jk_index.txt', 'gt_index.txt')
 
         self.len = self.get_unique_car_ids()
+
+        # Whether to init Dataset for RPTM Training or not
+        self.use_rptm = use_rptm
+        self.pkl_file = None
+        if(self.use_rptm):
+            self.gms = {}
+            self.pidx = {}
+            
+            self.pkl_file = 'index_vp.pkl'
+            gms_path = os.path.join('gms', 'veri')
+            entries = sorted(os.listdir(gms_path))
+            
+            # Loop through the files and load the GMS features
+            for name in entries:
+                f = open((os.path.join(gms_path, name)), 'rb')
+                if name == 'featureMatrix.pkl':
+                    s = name[0:13]
+                else:
+                    s = name[0:3]
+                self.gms[s] = pickle.load(f)
+                f.close
+                
+            # (img_path, car_id, cam_id, model_id, color_id, type_id, timestamp)
+            for img_path, _, car_id, _, _, _, _, _ in self.train:
+                path = img_path.split('\\', 4)[-1] # Extract the image name from the path
+                folder = path.split('_', 1)[0][1:] # Extract the folder name from the image name
+                self.pidx[folder] = car_id
+            
+            # Create the splits directory if it does not exist
+            split_dir = os.path.join(self.data_path, 'splits')
+            if not os.path.exists(split_dir):
+                src_root = os.path.join(self.data_path, 'image_train')
+                for i in os.listdir(src_root):
+                    folder_name = i.split('_', 2)[0][1:]
+                    if not os.path.exists(os.path.join(split_dir, folder_name)):
+                        os.makedirs(os.path.join(split_dir, folder_name))
+                    shutil.copyfile(os.path.join(src_root, i), os.path.join(split_dir, folder_name, i))
 
     def get_indices(self, query_file_path, junk_file_path, gt_file_path):
         # Read query file names
@@ -94,13 +134,14 @@ class Veri776():
                 try:
                     # Details
                     car_detail = labels[os.path.basename(img_path)]
+                    folder = (img_path.split('\\', 4)[-1]).split('_', 1)[0][1:] # Extract folder value (Needed for RPTM)
                     car_id = car_detail['vehicle_ID']
                     cam_id = car_detail['camera_ID']
                     model_id = car_detail['model_ID']
                     type_id = car_detail['type_ID']
                     color_id = car_detail['color_ID']
                     timestamp = car_detail['timestamp']
-                    details = (img_path, car_id, cam_id, model_id, color_id, type_id, timestamp)
+                    details = (img_path, folder, car_id, cam_id, model_id, color_id, type_id, timestamp)
                 except:
                     # There are 32 images that are not in the XML file,
                     # So we need to extract the infos manually from the image name
@@ -120,22 +161,25 @@ class Veri776():
         all_pids = {}
         relabeled_dataset = []
         for item in dataset:
-            img_path, vehicle_id, camera_id, model_id, color_id, type_id, timestamp = item
+            img_path, folder, vehicle_id, camera_id, model_id, color_id, type_id, timestamp = item
 
             if vehicle_id not in all_pids:
                 all_pids[vehicle_id] = len(all_pids)
 
             new_id = all_pids[vehicle_id]
-            relabeled_dataset.append((img_path, new_id, camera_id, model_id, color_id, type_id, timestamp))
+            relabeled_dataset.append((img_path, folder, new_id, camera_id, model_id, color_id, type_id, timestamp))
         return relabeled_dataset
 
-    def retrieve_details(self, img_path):
+    def retrieve_details(self, img_path: str):
         # We need to extract the infos manually from the image name
         # such as: '0002_c004_00084250_0.jpg'
         #
         # This should happen only when we are dealing with the query set
         # or, in general, if we want to recover the details from the image name
         img_full_string = os.path.basename(img_path).split('_')
+        
+        # Extract folder value (Needed for RPTM)
+        folder = (img_path.split('\\', 4)[-1]).split('_', 1)[0][1:]
 
         # Extract the vehicle and camera IDs
         car_id_num = int(re.search(r'\d+', img_full_string[0]).group()) - 1 # Subtract 1 to start from 0
@@ -149,10 +193,10 @@ class Veri776():
         color_id = -1
         timestamp = 'None'
 
-        return (img_path, car_id, cam_id, model_id, color_id, type_id, timestamp)
+        return (img_path, folder, car_id, cam_id, model_id, color_id, type_id, timestamp)
 
     def get_unique_car_ids(self):
         # Combine all car IDs from train, query, and gallery sets
-        all_car_ids = {car_id for _, car_id, _, _, _, _, _ in self.train}
+        all_car_ids = {car_id for _, _, car_id, _, _, _, _, _ in self.train}
         # Get the unique car IDs
         return len(all_car_ids)

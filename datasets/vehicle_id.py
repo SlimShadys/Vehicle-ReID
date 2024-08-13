@@ -1,11 +1,16 @@
 import os
+import pickle
+import shutil
 
 class VehicleID():
-    def __init__(self, data_path, dataset_size='small'):
+    def __init__(self, data_path, dataset_size='small', use_rptm=False):
         # Generic variables
+        self.dataset_name = 'vehicle_id'
         self.data_path = os.path.join(data_path, 'VehicleID')
         self.dataset_sizes = {'small': 800, 'medium': 1600, 'large': 2400} # Number of test images - 800 (Small), 1600 (Medium), 2400 (Large)
         self.num_test = self.dataset_sizes[dataset_size]
+        self.use_rptm = use_rptm
+        self.pkl_file = None
 
         self.vehicle_infos = self.get_vehicle_infos(os.path.join(self.data_path, 'attribute'))
 
@@ -20,6 +25,38 @@ class VehicleID():
         # self.query = self.get_list(os.path.join(self.data_path, 'train_test_split', f'test_{self.num_test}_query.txt'))
 
         self.len = self.get_unique_car_ids()
+
+        if(self.use_rptm):
+            self.gms = {}
+            self.pidx = {}
+            self.pkl_file = 'index_vp.pkl'
+            
+            gms_path = os.path.join('gms', 'vehicle_id')
+            entries = sorted(os.listdir(gms_path))
+            for name in entries:
+                f = open((os.path.join(gms_path, name)), 'rb')
+                if name == 'featureMatrix.pkl':
+                    s = name[0:13]
+                else:
+                    s = name[0:3]
+                self.gms[s] = pickle.load(f)
+                f.close
+                
+            # (img_path, car_id, cam_id, model_id, color_id, type_id, timestamp)
+            for img_path, _, car_id, _, _, _, _, _ in self.train:
+                path = img_path.split('\\', 4)[-1]
+                folder = path.split('_', 1)[0]
+                self.pidx[folder] = car_id
+            
+            # Create the splits
+            split_dir = os.path.join(self.data_path, 'splits')
+            if not os.path.exists(split_dir):
+                src_root = os.path.join(self.data_path, 'image_train')
+                for i in os.listdir(src_root):
+                    folder_name = i.split('_', 2)[0]
+                    if not os.path.exists(os.path.join(split_dir, folder_name)):
+                        os.makedirs(os.path.join(split_dir, folder_name))
+                    shutil.copyfile(os.path.join(src_root, i), os.path.join(split_dir, folder_name, i))
 
     def get_vehicle_infos(self, file_path):
         # Image to Vehicle ID mapping
@@ -74,14 +111,15 @@ class VehicleID():
             # Extract the details
             try:
                 vehicle_info = self.vehicle_infos[vehicle_img]
-                dataset.append((os.path.join(self.img_dir, line[0] + '.jpg',),
-                                vehicle_info['car_id'],
-                                -1, # Camera ID is not available
-                                vehicle_info['model_id'], # model ID is the model name
-                                vehicle_info['color_id'], # Color ID is the color name
-                                -1, # Type ID is not available
-                                -1,) # Timestamp is not available
-                                ) 
+                img_path = (os.path.join(self.img_dir, line[0] + '.jpg'))
+                folder = img_path.split('\\', 4)[-1].split('_', 1)[0]
+                car_id = vehicle_info['car_id']
+                cam_id = -1, # Camera ID is not available
+                model_id = vehicle_info['model_id'], # model ID is the model name
+                type_id = -1, # Type ID is not available
+                color_id = vehicle_info['color_id'], # Color ID is the color name
+                timestamp = -1, # Timestamp is not available
+                dataset.append(img_path, folder, car_id, cam_id, model_id, color_id, type_id, timestamp)
             except StopIteration:
                 print(f"No matching details found for Vehicle with ID: {vehicle_id}")
 
@@ -89,6 +127,6 @@ class VehicleID():
 
     def get_unique_car_ids(self):
         # Combine all car IDs from train, query, and gallery sets
-        all_car_ids = {car_id for _, car_id, _, _, _, _, _ in self.train}
+        all_car_ids = {car_id for _, _, car_id, _, _, _, _, _ in self.train}
         # Get the unique car IDs
         return len(all_car_ids)

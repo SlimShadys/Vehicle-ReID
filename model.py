@@ -13,11 +13,11 @@ resnet_urls = {
 }
 
 class ModelBuilder:
-    def __init__(self, model_name='resnet50', pretrained=True, num_classes=1000, model_config=None):
+    def __init__(self, model_name='resnet50', pretrained=True, num_classes=1000, model_configs=None):
         self.model_name = model_name.lower()
         self.pretrained = pretrained
         self.num_classes = num_classes
-        self.model_config = model_config or {}
+        self.model_configs = model_configs or {}
         
         # Define the various model builders
         # - resnet  : ResNet family
@@ -58,16 +58,16 @@ class ModelBuilder:
                                     num_classes=self.num_classes,
                                     fc_dims=None,
                                     dropout_p=None,
-                                    use_gem=self.model_config.get('use_gem', False),
-                                    use_stride=self.model_config.get('use_stride', False),
-                                    use_bottleneck=self.model_config.get('use_bottleneck', False),
+                                    use_gem=self.model_configs.get('use_gem', False),
+                                    use_stride=self.model_configs.get('use_stride', False),
+                                    use_bottleneck=self.model_configs.get('use_bottleneck', False),
                                     pretrained=(self.pretrained, resnet_urls[self.model_name]))
         else:
             return ResNet(self.model_name,
                           self.num_classes,
-                          use_gem=self.model_config.get('use_gem', False),
-                          use_stride=self.model_config.get('use_stride', False),
-                          use_bottleneck=self.model_config.get('use_bottleneck', False),
+                          use_gem=self.model_configs.get('use_gem', False),
+                          use_stride=self.model_configs.get('use_stride', False),
+                          use_bottleneck=self.model_configs.get('use_bottleneck', False),
                           pretrained=(self.pretrained, resnet_urls[self.model_name]))
 
     # Specific Model Builder for Vision Transformer

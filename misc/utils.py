@@ -3,7 +3,6 @@ import os
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.utils.model_zoo as model_zoo
 from PIL import Image
 from tqdm import tqdm
@@ -22,11 +21,6 @@ def read_image(img_path):
             print("IOError incurred when reading '{}'. Will redo. Don't worry. Just chill.".format(img_path))
             pass
     return img
-
-def compute_cross_entropy(p, q):
-    q = F.log_softmax(q, dim=-1)
-    loss = torch.sum(p * q, dim=-1)
-    return - loss.mean()
        
 def weights_init_kaiming(m):
     classname = m.__class__.__name__
@@ -48,8 +42,31 @@ def weights_init_classifier(m):
         nn.init.normal_(m.weight, std=0.001)
         if m.bias:
             nn.init.constant_(m.bias, 0.0)
-            
-def euclidean_dist(x, y):
+
+def init_pretrained_weights(model, model_url):
+    """
+    Initialize model with pretrained weights.
+    Layers that don't match with pretrained layers in name or size are kept unchanged.
+    """
+    pretrain_dict = model_zoo.load_url(model_url)
+    model_dict = model.state_dict()
+    pretrain_dict = {k: v for k, v in pretrain_dict.items() if k in model_dict and model_dict[k].size() == v.size()}
+    model_dict.update(pretrain_dict)
+    model.load_state_dict(model_dict)
+    print('Initialized model with pretrained weights from {}'.format(model_url))
+
+
+def normalize(x, axis=-1):
+    """Normalizing to unit length along the specified dimension.
+    Args:
+      x: pytorch Variable
+    Returns:
+      x: pytorch Variable, same shape as input
+    """
+    x = 1. * x / (torch.norm(x, 2, axis, keepdim=True).expand_as(x) + 1e-12)
+    return x
+
+def euclidean_dist(x, y, use_amp=False, train=False):
     """
     Args:
       x: pytorch Variable, with shape [m, d]
@@ -61,19 +78,82 @@ def euclidean_dist(x, y):
     xx = torch.pow(x, 2).sum(1, keepdim=True).expand(m, n)
     yy = torch.pow(y, 2).sum(1, keepdim=True).expand(n, m).t()
     dist = xx + yy
+    if use_amp and train is True:
+        dist = dist.half()
+    else:
+        dist = dist.type(torch.float32) # Force the type to float32 if not using AMP
+        x = x.type(torch.float32)
+        y = y.type(torch.float32)
+            
     dist.addmm_(x, y.t(), beta=1, alpha=-2)
     dist = dist.clamp(min=1e-12).sqrt() # for numerical stability
     return dist
 
-def normalize(x, axis=-1):
-    """Normalizing to unit length along the specified dimension.
-    Args:
-      x: pytorch Variable
-    Returns:
-      x: pytorch Variable, same shape as input
-    """
-    x = 1. * x / (torch.norm(x, 2, axis, keepdim=True).expand_as(x) + 1e-12)
-    return x
+def save_model(state, output_dir, model_path='model.pth'):
+    '''
+        Save the model to a file
+        @param state: The state of the model, optimizer, scheduler, and loss value
+        @param output_dir: The output directory to save the model
+        @param model_path: The file name of the model to save
+    '''
+    torch.save(state, os.path.join(output_dir, model_path))
+    
+def load_model(model_path: str,
+               model: torch.nn.Module,
+               optimizer: torch.optim.Optimizer,
+               scheduler_warmup: torch.optim.lr_scheduler._LRScheduler,
+               device):
+    '''
+    Load the model from a file
+    @param model_path: The path to the model file
+    @param model: The model to load
+    @param optimizer: The optimizer to load
+    @param scheduler_warmup: The scheduler to load
+    @param device: The device to load the model to
+    '''
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+    model.load_state_dict(checkpoint['model'])
+    optimizer.load_state_dict(checkpoint['optimizer'])
+    scheduler_warmup.load_state_dict(checkpoint['scheduler'])
+    start_epoch = checkpoint['epoch'] + 1
+    print(f"Correctly loaded the model, optimizer, and scheduler from: {model_path}")
+    return model, optimizer, scheduler_warmup, start_epoch
+
+# Search function for getting the index of the data
+# Needed for RPTM Training
+def search(path):
+    start = 0
+    count = 0
+    data_index = []
+    for i in sorted(os.listdir(path)):
+        x = len(os.listdir(os.path.join(path, i)))
+        data_index.append((count, start, start + x-1))
+        count = count + 1
+        start = start + x
+    return data_index
+
+# Needed for RPTM Training
+def strint(x, dataset):
+    if dataset == 'veri_776':
+        if len(str(x))==1:
+            return '00'+str(x)
+        if len(str(x))==2:
+            return '0'+str(x)
+        if len(str(x))==3:
+            return str(x)
+    elif dataset == 'vehicle_id':
+        if len(str(x))==1:
+            return '0000'+str(x)
+        if len(str(x))==2:
+            return '000'+str(x)
+        if len(str(x))==3:
+            return '00'+str(x)
+        if len(str(x))==4:
+            return '0'+str(x)
+        if len(str(x))==5:
+            return str(x)
+    else:
+        raise Exception('Invalid dataset name')
 
 def eval_func(distmat, q_pids, g_pids, q_camids, g_camids, max_rank=50, re_rank=False):
     """Evaluation with market1501 metric
@@ -133,28 +213,28 @@ def eval_func(distmat, q_pids, g_pids, q_camids, g_camids, max_rank=50, re_rank=
 
     return all_cmc, mAP, all_AP
 
-"""
-Created on Fri, 25 May 2018 20:29:09
-
-@author: luohao
-"""
-
-"""
-CVPR2017 paper:Zhong Z, Zheng L, Cao D, et al. Re-ranking Person Re-identification with k-reciprocal Encoding[J]. 2017.
-url:http://openaccess.thecvf.com/content_cvpr_2017/papers/Zhong_Re-Ranking_Person_Re-Identification_CVPR_2017_paper.pdf
-Matlab version: https://github.com/zhunzhong07/person-re-ranking
-"""
-
-"""
-API
-
-probFea: all feature vectors of the query set (torch tensor)
-probFea: all feature vectors of the gallery set (torch tensor)
-k1,k2,lambda: parameters, the original paper is (k1=20,k2=6,lambda=0.3)
-MemorySave: set to 'True' when using MemorySave mode
-Minibatch: avaliable when 'MemorySave' is 'True'
-"""
 def re_ranking(probFea, galFea, k1, k2, lambda_value, local_distmat=None, only_local=False):
+    """
+    Created on Fri, 25 May 2018 20:29:09
+
+    @author: luohao
+    """
+
+    """
+    CVPR2017 paper:Zhong Z, Zheng L, Cao D, et al. Re-ranking Person Re-identification with k-reciprocal Encoding[J]. 2017.
+    url:http://openaccess.thecvf.com/content_cvpr_2017/papers/Zhong_Re-Ranking_Person_Re-Identification_CVPR_2017_paper.pdf
+    Matlab version: https://github.com/zhunzhong07/person-re-ranking
+    """
+
+    """
+    API
+
+    probFea: all feature vectors of the query set (torch tensor)
+    probFea: all feature vectors of the gallery set (torch tensor)
+    k1,k2,lambda: parameters, the original paper is (k1=20,k2=6,lambda=0.3)
+    MemorySave: set to 'True' when using MemorySave mode
+    Minibatch: avaliable when 'MemorySave' is 'True'
+    """
     query_num = probFea.size(0)
     all_num = query_num + galFea.size(0)
     if only_local:
@@ -163,7 +243,13 @@ def re_ranking(probFea, galFea, k1, k2, lambda_value, local_distmat=None, only_l
         feat = torch.cat([probFea, galFea])
         distmat = torch.pow(feat, 2).sum(dim=1, keepdim=True).expand(all_num, all_num) + \
                   torch.pow(feat, 2).sum(dim=1, keepdim=True).expand(all_num, all_num).t()
+        
+        # Force the type to float32
+        distmat = distmat.type(torch.float32)
+        feat = feat.type(torch.float32)
+
         distmat.addmm_(feat, feat.t(), beta=1, alpha=-2)
+        
         original_dist = distmat.cpu().numpy()
         del feat
         if local_distmat is not None:
@@ -228,45 +314,3 @@ def re_ranking(probFea, galFea, k1, k2, lambda_value, local_distmat=None, only_l
     del jaccard_dist
     final_dist = final_dist[:query_num, query_num:]
     return final_dist
-
-'''
-    Save the model to a file
-    @param state: The state of the model, optimizer, scheduler, and loss value
-    @param output_dir: The output directory to save the model
-    @param model_path: The file name of the model to save
-'''
-def save_model(state, output_dir, model_path='model.pth'):
-    torch.save(state, os.path.join(output_dir, model_path))
-    
-'''
-    Load the model from a file
-    @param model_path: The path to the model file
-    @param model: The model to load
-    @param optimizer: The optimizer to load
-    @param scheduler_warmup: The scheduler to load
-    @param device: The device to load the model to
-'''
-def load_model(model_path: str,
-               model: torch.nn.Module,
-               optimizer: torch.optim.Optimizer,
-               scheduler_warmup: torch.optim.lr_scheduler._LRScheduler,
-               device):
-    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-    model.load_state_dict(checkpoint['model'])
-    optimizer.load_state_dict(checkpoint['optimizer'])
-    scheduler_warmup.load_state_dict(checkpoint['scheduler'])
-    start_epoch = checkpoint['epoch'] + 1
-    print(f"Correctly loaded the model, optimizer, and scheduler from: {model_path}")
-    return model, optimizer, scheduler_warmup, start_epoch
-
-def init_pretrained_weights(model, model_url):
-    """
-    Initialize model with pretrained weights.
-    Layers that don't match with pretrained layers in name or size are kept unchanged.
-    """
-    pretrain_dict = model_zoo.load_url(model_url)
-    model_dict = model.state_dict()
-    pretrain_dict = {k: v for k, v in pretrain_dict.items() if k in model_dict and model_dict[k].size() == v.size()}
-    model_dict.update(pretrain_dict)
-    model.load_state_dict(model_dict)
-    print('Initialized model with pretrained weights from {}'.format(model_url))

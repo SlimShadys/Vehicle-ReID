@@ -1,6 +1,8 @@
 import os
+import random
 import sys
 
+import numpy as np
 import torch
 import yaml
 from dataset import DatasetBuilder
@@ -10,8 +12,22 @@ from model import ModelBuilder
 from torch.utils.data import DataLoader
 from train import Trainer
 
-def main(config):
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # for multi-GPU
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    print("Correctly set the seed to: ", seed)
 
+def main(config, seed):
+    
+    # Set the seed for reproducibility
+    set_seed(seed)
+    
     print("|***************************************************|")
     print("|                   Vehicle Re-ID                   |")
     print("|                        TEST                       |")
@@ -23,29 +39,31 @@ def main(config):
     print("|***************************************************|")
 
     # ============= VARIABLES =============
-    dataset_config = config['dataset']
-    model_config = config['model']
-    val_config = config['validation']
-    test_config = config['test']
+    dataset_configs = config['dataset']
+    model_configs = config['model']
+    val_configs = config['validation']
+    test_configs = config['test']
     training_configs = config['training']
+    augmentation_configs = config['augmentation']
+    loss_configs = config['loss']
     
     # Dataset variables
-    data_path = dataset_config['data_path']
-    dataset_name = dataset_config['dataset_name']
-    dataset_size = dataset_config['dataset_size']
+    data_path = dataset_configs['data_path']
+    dataset_name = dataset_configs['dataset_name']
+    dataset_size = dataset_configs['dataset_size']
 
     # Model parameters
-    device = model_config['device']
-    model = model_config['model']
-    pretrained = model_config['pretrained']
+    device = model_configs['device']
+    model = model_configs['model']
+    pretrained = model_configs['pretrained']
         
     # Validation parameters
-    batch_size_val = val_config['batch_size']
+    batch_size_val = val_configs['batch_size']
     
     # Test parameters
-    run_reid_metrics = test_config['run_reid_metrics']
-    normalize_embeddings = test_config['normalize_embeddings']
-    model_val_path = test_config['model_val_path']
+    run_reid_metrics = test_configs['run_reid_metrics']
+    normalize_embeddings = test_configs['normalize_embeddings']
+    model_val_path = test_configs['model_val_path']
     # =====================================
 
     num_classes = {
@@ -60,7 +78,7 @@ def main(config):
         model_name=model,
         pretrained=pretrained,
         num_classes=num_classes[dataset_name],
-        model_config=model_config
+        model_config=model_configs
     )
 
     # Get the model and move it to the device
@@ -104,7 +122,7 @@ def main(config):
 
         # Calculate the L2 distance between the 2 images
         # Smaller distances indicate higher similarity, while larger distances indicate less similarity
-        distance = euclidean_dist(features_1, features_2)
+        distance = euclidean_dist(features_1, features_2, train=False)
         print(f"Distance between the 2 images: {distance.item():.4f}")
     else:
         # Create Dataset and DataLoaders
@@ -132,8 +150,7 @@ def main(config):
             dataloaders={'train': None, 'val': {val_loader, len(dataset_builder.dataset.query)}},
             loss_fn=None,
             device=device,
-            train_configs=training_configs,
-            val_configs=val_config,
+            configs=(training_configs, val_configs, loss_configs, augmentation_configs)
         )
         trainer.validate(save_results=False)
     
@@ -149,5 +166,8 @@ if __name__ == '__main__':
     with open(config_file, 'r') as f:
         config = yaml.load(f, yaml.FullLoader)['reid']
     
-    # Run the main function
-    main(config)
+    # Get the seed from the config
+    seed = config.get('seed', 2047315)  # Default to 2047315 if not specified
+    
+    # Run the main function with the seed
+    main(config, seed)
