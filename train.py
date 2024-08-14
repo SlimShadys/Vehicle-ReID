@@ -1,17 +1,38 @@
 import os
 import random
-from typing import Optional
+from typing import Dict, Optional, Set, Tuple, Type, Union
 
 import numpy as np
 import numpy.ma as ma
 import torch
-from misc.utils import (euclidean_dist, eval_func, load_model, re_ranking,
-                        read_image, save_model, search, strint)
+from datasets.transforms import Transformations
+from datasets.vehicle_id import VehicleID
+from datasets.veri_776 import Veri776
+from datasets.veri_wild import VeriWild
+from loss import LossBuilder
+from misc.utils import (euclidean_dist, eval_func, eval_func_vehicle_id, load_model, re_ranking,
+                        read_image, save_model, search, strint,
+                        visualize_ranked_results)
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 from training.scheduler import WarmupDecayLR
 
 class Trainer:
-    def __init__(self, model: torch.nn.Module, dataloaders, val_interval, loss_fn: torch.Tensor, configs, device='cuda'):
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        dataloaders: Dict[str, Union[
+                                        Optional[DataLoader],
+                                        Dict[str, Union[DataLoader, int]], 
+                                        Type[Union[VehicleID, Veri776, VeriWild]], 
+                                        Transformations
+                                    ]
+                        ],
+        val_interval: int,
+        loss_fn: LossBuilder,
+        configs,
+        device: str = 'cuda'
+    ):
         self.model = model
         self.device = device
         self.train_loader = dataloaders['train']
@@ -20,61 +41,74 @@ class Trainer:
         self.transforms = dataloaders['transform']
         self.val_interval = val_interval
         self.loss_fn = loss_fn
-        self.train_configs, self.val_configs, self.loss_configs, self.augmentation_configs = configs
-        
-        # Training configurations
-        self.epochs = self.train_configs['epochs']
-        self.learning_rate = self.train_configs['learning_rate']
-        self.log_interval = self.train_configs['log_interval']
-        self.output_dir = self.train_configs['output_dir']
-        self.load_checkpoint = self.train_configs['load_checkpoint']
-        self.use_warmup = self.train_configs['use_warmup']
-        self.batch_size = self.train_configs['batch_size']
-        self.use_amp = self.train_configs['use_amp']
-        
-        # Loss configs
-        self.use_rptm, self.rptm_type = self.loss_configs['use_rptm']
+        self.misc_configs, self.augmentation_configs, self.loss_configs, self.train_configs, self.val_configs, self.test_configs = configs
 
-        # Optimizer configurations
-        self.weight_decay = self.train_configs['weight_decay']
-        self.weight_decay_bias = self.train_configs['weight_decay_bias']
-        self.bias_lr_factor = self.train_configs['bias_lr_factor']
-        self.optimizer_name = self.train_configs['optimizer']
+        # Test configurations (Whether we are testing or not)
+        self.testing = self.test_configs['testing']
+
+        # Misc configurations
+        self.output_dir = self.misc_configs['output_dir']
+        self.use_amp = self.misc_configs['use_amp']
+
+        if (self.testing == False):
+            # Training configurations
+            self.epochs = self.train_configs['epochs']
+            self.learning_rate = self.train_configs['learning_rate']
+            self.log_interval = self.train_configs['log_interval']
+            self.load_checkpoint = self.train_configs['load_checkpoint']
+            self.use_warmup = self.train_configs['use_warmup']
+            self.batch_size = self.train_configs['batch_size']
+
+            # Loss configs
+            self.use_rptm, self.rptm_type = self.loss_configs['use_rptm']
+            self.max_negative_labels = self.dataset.max_negative_labels
+
+            # Optimizer configurations
+            self.weight_decay = self.train_configs['weight_decay']
+            self.weight_decay_bias = self.train_configs['weight_decay_bias']
+            self.bias_lr_factor = self.train_configs['bias_lr_factor']
+            self.optimizer_name = self.train_configs['optimizer']
+
+            # Augmentation configurations
+            self.img_height = self.augmentation_configs['height'] + \
+                self.augmentation_configs['padding'] * 2
+            self.img_width = self.augmentation_configs['width'] + \
+                self.augmentation_configs['padding'] * 2
+
+            self.start_epoch = 0
+            self.running_loss = []
+            self.running_id_loss = []
+            self.running_metric_loss = []
+            self.acc_list = []
 
         # Validation configurations
         self.re_ranking = self.val_configs['re_ranking']
-        
-        # Augmentation configurations
-        self.img_height = self.augmentation_configs['height'] + self.augmentation_configs['padding'] * 2
-        self.img_width = self.augmentation_configs['width'] + self.augmentation_configs['padding'] * 2
-        
-        self.start_epoch = 0
-        self.running_loss = []
-        self.running_id_loss = []
-        self.running_metric_loss = []
-        self.acc_list = []
+        self.visualize_ranks = self.val_configs['visualize_ranks']
 
-        if (self.learning_rate is not None):
+        if (self.testing == False):
             # Update the weights decay and learning rate for the model
             model_params = []
             for key, value in self.model.named_parameters():
                 if not value.requires_grad:
                     continue
-                lr = self.learning_rate
-                weight_decay = self.weight_decay
-                if "bias" in key:
-                    lr = self.learning_rate * self.bias_lr_factor
-                    weight_decay = self.weight_decay_bias
-                model_params += [{"params": [value],
-                                  "lr": lr, "weight_decay": weight_decay}]
+                else:
+                    lr = self.learning_rate
+                    weight_decay = self.weight_decay
+                    if "bias" in key:
+                        lr = self.learning_rate * self.bias_lr_factor
+                        weight_decay = self.weight_decay_bias
+                    model_params += [{"params": [value],
+                                      "lr": lr,
+                                      "weight_decay": weight_decay}]
 
             # Create the optimizer
-            if(self.optimizer_name == 'adam'):
+            if (self.optimizer_name == 'adam'):
                 self.optimizer = torch.optim.Adam(model_params, lr=self.learning_rate)
-            elif(self.optimizer_name == 'sgd'):
-                self.optimizer = torch.optim.SGD(model_params, lr=self.learning_rate, momentum=0.9, weight_decay=self.weight_decay, dampening=0.0, nesterov=True)
+            elif (self.optimizer_name == 'sgd'):
+                self.optimizer = torch.optim.SGD(model_params, lr=self.learning_rate, momentum=0.9, dampening=0.0, nesterov=True)
             else:
-                raise ValueError("Invalid optimizer. Choose between 'adam' or 'sgd'")
+                raise ValueError(
+                    "Invalid optimizer name in config file. Choose between 'adam' or 'sgd'")
 
             if (self.use_warmup):
                 # For Learning Rate Warm-up and Decay
@@ -84,18 +118,20 @@ class Trainer:
                     optimizer=self.optimizer,
                     milestones=self.train_configs['steps'],
                     warmup_epochs=self.train_configs['warmup_epochs'],
-                    warmup_gamma=self.train_configs['warmup_gamma'],
-                    decay_method=self.train_configs['decay_method']
+                    gamma=self.train_configs['gamma'],
+                    cosine_power=self.train_configs['cosine_power'],
+                    decay_method=self.train_configs['decay_method'],
+                    min_lr=self.train_configs['min_lr']
                 )
             else:
                 self.scheduler = torch.optim.lr_scheduler.MultiStepLR(
-                    self.optimizer, milestones=self.train_configs['steps'], gamma=self.train_configs['warmup_gamma'])
-            
+                    self.optimizer, milestones=self.train_configs['steps'], gamma=self.train_configs['gamma'])
+
             # Check if load checkpoint is not False. If it is not False, check if the string is not empty, then load the model
-            if(self.load_checkpoint != False and self.load_checkpoint != ''):
+            if (self.load_checkpoint != False and self.load_checkpoint != ''):
                 self.model, self.optimizer, self.scheduler, self.start_epoch = load_model(
                     self.load_checkpoint, self.model, self.optimizer, self.scheduler, self.device)
-                
+
     def empty_lists(self):
         self.running_loss = []
         self.running_id_loss = []
@@ -110,7 +146,7 @@ class Trainer:
         return img
 
     def run(self):
-        if(self.use_rptm):
+        if (self.use_rptm):
             self.gms = self.dataset.gms
             self.pidx = self.dataset.pidx
             folders = []
@@ -118,17 +154,18 @@ class Trainer:
             for fld in os.listdir(self.split_dir):
                 folders.append(fld)
             data_index = search(self.split_dir)
-        
+
+        # Warning: use `torch.amp.GradScaler('cuda', args...)` instead.
         scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
-                
+
         for epoch in range(self.start_epoch, self.epochs):
             self.empty_lists()  # Empty the lists for each epoch
 
             # Train the model
             if self.use_rptm:
-                self.train_rptm(epoch, scaler, data_index) # Training with RPTM
+                self.train_rptm(epoch, scaler, data_index)  # Training with RPTM
             else:
-                self.train(epoch, scaler) # Standard training 
+                self.train(epoch, scaler)                   # Standard training
 
             # Update learning rate
             self.scheduler.step()
@@ -168,7 +205,7 @@ class Trainer:
                 if indexx > len(self.gms[labelx]) - 1:
                     indexx = len(self.gms[labelx]) - 1
                 a = self.gms[labelx][indexx]
-                
+
                 if self.rptm_type == 'min':
                     threshold = np.arange(10)
                 elif self.rptm_type == 'mean':
@@ -178,7 +215,7 @@ class Trainer:
 
                 minpos = np.argmin(ma.masked_where(a == threshold, a))
                 while True:
-                    neg_label = random.choice(range(1, 770))
+                    neg_label = random.choice(range(1, self.max_negative_labels))
                     if (neg_label is not int(labelx)) and (os.path.isdir(os.path.join(self.split_dir, strint(neg_label, self.dataset.dataset_name))) is True):
                         break
                 negative_label = strint(neg_label, self.dataset.dataset_name)
@@ -187,46 +224,47 @@ class Trainer:
 
                 pos_dic = self.dataset.train[data_index[cidx][1] + minpos]
                 neg_dic = self.dataset.train[data_index[neg_cid][1] + neg_index]
-                               
+
                 trainX[j] = img[j]
                 trainX[j + self.batch_size] = self.retrieve_image(pos_dic)
                 trainX[j + (self.batch_size * 2)] = self.retrieve_image(neg_dic)
                 trainY[j] = cidx
                 trainY[j + self.batch_size] = pos_dic[2]
                 trainY[j + (self.batch_size * 2)] = neg_dic[2]
-            
+
             self.optimizer.zero_grad()
-            trainX = trainX.cuda()
-            trainY = trainY.cuda()
-            
+            trainX = trainX.to(self.device)
+            trainY = trainY.to(self.device)
+
             with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=self.use_amp):
                 embeddings, pred_ids = self.model(trainX, training=True)
-                ID_loss, metric_loss = self.loss_fn(embeddings, pred_ids, trainY, normalize=False, use_rptm=True)
-            
+                ID_loss, metric_loss = self.loss_fn.forward(embeddings, pred_ids, trainY, normalize=False, use_rptm=True)
+
             loss = ID_loss + metric_loss
 
             # Accuracy
             pred_ids = pred_ids.detach().cpu()
-            
-            if(self.use_rptm):
+
+            if (self.use_rptm):
                 car_id = car_id[0:self.batch_size]
                 pred_ids = pred_ids[0:self.batch_size]
-                
+
             accuracy = (torch.max(pred_ids, 1)[1] == car_id).float().mean()
 
             # Using AMP for mixed precision training
-            scaler.scale(loss).backward()
-            scaler.step(self.optimizer)
-            scaler.update()
-
-            # loss.backward()
-            # self.optimizer.step()
+            if(self.use_amp):
+                scaler.scale(loss).backward()
+                scaler.step(self.optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                self.optimizer.step()
 
             self.running_loss.append(loss.detach().cpu().item())
             self.running_id_loss.append(ID_loss.detach().cpu().item())
             self.running_metric_loss.append(metric_loss.detach().cpu().item())
             self.acc_list.append(accuracy.detach().cpu().item())
-            
+
             # Get scheduler class, in such a way that if we are dealing with WarmupDecayLR, we can get the learning rate directly
             # otherwise, we can call the get_lr() method (in this case we are using MultiStepLR)
             # This is needed to silence the warning: To get the last learning rate computed by the scheduler, please use `get_last_lr()`.
@@ -258,20 +296,21 @@ class Trainer:
                 embeddings, pred_ids = self.model(img, training=True)
 
                 # Loss
-                ID_loss, metric_loss = self.loss_fn(embeddings, pred_ids, car_id, normalize=False, use_rptm=True)
-                
+                ID_loss, metric_loss = self.loss_fn.forward(embeddings, pred_ids, car_id, normalize=False, use_rptm=False)
+
             loss = ID_loss + metric_loss
 
             # Accuracy
             accuracy = (torch.max(pred_ids, 1)[1] == car_id).float().mean()
 
             # Using AMP for mixed precision training
-            scaler.scale(loss).backward()
-            scaler.step(self.optimizer)
-            scaler.update()
-
-            # loss.backward()
-            # self.optimizer.step()
+            if(self.use_amp):
+                scaler.scale(loss).backward()
+                scaler.step(self.optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                self.optimizer.step()
 
             self.running_loss.append(loss.detach().cpu().item())
             self.running_id_loss.append(ID_loss.detach().cpu().item())
@@ -285,8 +324,7 @@ class Trainer:
                       f"Metric Loss: {np.mean(self.running_metric_loss):.4f} | "
                       f"Accuracy: {np.mean(self.acc_list):.4f} | "
                       f"LR: {self.scheduler.get_lr()[0]:.2e}")
-            break
-        
+
     def validate(self, epoch: Optional[int] = 0, save_results=False):
         self.model.eval()
         num_query = self.num_query
@@ -311,30 +349,45 @@ class Trainer:
         query_feat = features[:num_query]
         query_pid = car_ids[:num_query]
         query_camid = cam_ids[:num_query]
-        query_path = np.array(paths[:num_query])
+        # query_path = np.array(paths[:num_query])
 
         gallery_feat = features[num_query:]
         gallery_pid = car_ids[num_query:]
         gallery_camid = cam_ids[num_query:]
-        gallery_path = np.array(paths[num_query:])
+        # gallery_path = np.array(paths[num_query:])
 
         distmat = euclidean_dist(query_feat, gallery_feat, self.use_amp, train=False)
 
         CMC_RANKS = [1, 3, 5, 10]
-        cmc, mAP, _ = eval_func(distmat.numpy(), query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(),
-                                query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(), max_rank=max(CMC_RANKS), re_rank=False)
-
-        if(self.re_ranking):
-            distmat_re = re_ranking(query_feat, gallery_feat, k1=80, k2=15, lambda_value=0.2)
+        if (self.dataset.dataset_name == 'vehicle_id'):
+            cmc, mAP, _ = eval_func_vehicle_id(distmat.numpy(), query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(),
+                        query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(),
+                        max_rank=max(CMC_RANKS), re_rank=False)
+        else:
+            cmc, mAP, _ = eval_func(distmat.numpy(), query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(),
+                        query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(),
+                        max_rank=max(CMC_RANKS), re_rank=False)
             
+        if (self.re_ranking):
+            distmat_re = re_ranking(query_feat, gallery_feat, k1=80, k2=15, lambda_value=0.2)
+
             # We have to use the evaluate_vid function only for Vehicle ID dataset
             if self.dataset.dataset_name == 'vehicle_id':
-                raise NotImplementedError("The evaluate_vid function is not implemented yet for the Vehicle ID dataset")
-                #cmc_re, mAP_re = evaluate_vid(distmat_re, q_pids, g_pids, q_camids, g_camids, 50)
+                cmc_re, mAP_re, _ = eval_func_vehicle_id(distmat_re, query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(),
+                                              query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(),
+                                              max_rank=max(CMC_RANKS), re_rank=True)
             else:
                 cmc_re, mAP_re, _ = eval_func(distmat_re, query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(),
-                                        query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(), max_rank=max(CMC_RANKS), re_rank=True)
-                
+                                              query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(),
+                                              max_rank=max(CMC_RANKS), re_rank=True)
+
+        # Visualize the ranked results if the flag is set to True
+        if (self.visualize_ranks):
+            if (self.re_ranking):
+                visualize_ranked_results(distmat=distmat_re, dataset=(self.dataset.query, self.dataset.gallery), topk=max(CMC_RANKS))
+            else:
+                visualize_ranked_results(distmat=distmat, dataset=(self.dataset.query, self.dataset.gallery), topk=max(CMC_RANKS))
+
         # Output the results to the console, depending on the re-ranking
         print(f"Epoch {epoch}\n")
         if self.re_ranking:
@@ -350,7 +403,7 @@ class Trainer:
         if (save_results):
             # Append the results to a file
             with open(os.path.join(self.output_dir, 'results-val.txt'), 'a') as f:
-                if(self.re_ranking):
+                if (self.re_ranking):
                     f.write(f"Epoch {epoch}\n"
                             f"\t - CMC Rank-1: {cmc[CMC_RANKS[0]-1]:.2%} ({cmc_re[CMC_RANKS[0]-1]:.2%})\n"
                             f"\t - CMC Rank-3: {cmc[CMC_RANKS[1]-1]:.2%} ({cmc_re[CMC_RANKS[1]-1]:.2%})\n"

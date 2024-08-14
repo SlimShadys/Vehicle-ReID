@@ -1,4 +1,5 @@
 from bisect import bisect_right
+import math
 
 import matplotlib.pyplot as plt
 import torch.nn as nn
@@ -6,128 +7,134 @@ import torch.optim as optim
 from torch.optim.lr_scheduler import _LRScheduler
 from tqdm import tqdm
 
-# Custom learning rate scheduler for warmup and decay.
+# Custom learning rate scheduler for warmup and decay (Linear, Smooth or Cosine).
 class WarmupDecayLR(_LRScheduler):
-    def __init__(self, optimizer, milestones, warmup_epochs=10, warmup_gamma=0.6, decay_method="linear", last_epoch=-1):
+    def __init__(self, optimizer, milestones, warmup_epochs=10, gamma=0.6, cosine_power=0.45, decay_method="linear", min_lr=1.0e-6, last_epoch=-1):
         self.milestones = sorted(milestones)
         self.warmup_epochs = warmup_epochs
-        self.warmup_gamma = warmup_gamma
+        self.gamma = gamma
         self.decay_method = decay_method
+        self.min_lr = min_lr                    # Added to control the minimum learning rate
+        self.cosine_power = cosine_power        # Added to control the power of the cosine decay
         super(WarmupDecayLR, self).__init__(optimizer, last_epoch)
 
     def get_lr(self):
         # Warmup phase
         if self.last_epoch < self.warmup_epochs:
-            return [base_lr * ((self.last_epoch + 1) / self.warmup_epochs) for base_lr in self.base_lrs]
-        
-        # Milestone decay phase
-        elif(self.decay_method == "linear"): 
-            return [base_lr * (self.warmup_gamma ** len([m for m in self.milestones if m <= self.last_epoch]))
-                    for base_lr in self.base_lrs]
-        
-        # Smooth decay phase
+            return [max(base_lr * ((self.last_epoch + 1) / self.warmup_epochs), self.min_lr) for base_lr in self.base_lrs]
+
+        # Decay phase
+        if self.decay_method == "linear":
+            return [max(self._get_linear_lr(base_lr), self.min_lr) for base_lr in self.base_lrs]
+        elif self.decay_method == "smooth":
+            return [max(self._get_smooth_lr(base_lr), self.min_lr) for base_lr in self.base_lrs]
+        elif self.decay_method == "cosine":
+            return [max(self._get_cosine_lr(base_lr), self.min_lr) for base_lr in self.base_lrs]
         else:
-            return [self._get_smooth_lr(base_lr) for base_lr in self.base_lrs]
+            raise ValueError(f"Unknown decay method: {self.decay_method}")
+
+    def _get_linear_lr(self, base_lr):
+        return max(base_lr * (self.gamma ** len([m for m in self.milestones if m <= self.last_epoch])), self.min_lr)
 
     def _get_smooth_lr(self, base_lr):
         if self.last_epoch < self.milestones[0]:
             return base_lr
-        for i in range(len(self.milestones) - 1):
-            if self.milestones[i] <= self.last_epoch < self.milestones[i+1]:
-                t = (self.last_epoch - self.milestones[i]) / (self.milestones[i+1] - self.milestones[i])
-                return base_lr * (self.warmup_gamma ** i) * (self.warmup_gamma ** t)
-        return base_lr * (self.warmup_gamma ** len(self.milestones))
-       
-class WarmupMultiStepLR(_LRScheduler):
-    def __init__(self, optimizer, milestones, warmup_gamma=0.1, warmup_factor=0.01, warmup_iters=10, warmup_method="linear", last_epoch=-1):
-        # Check if the milestones are in increasing order
-        if not list(milestones) == sorted(milestones):
-            raise ValueError(
-                "Milestones should be a list of" " increasing integers. Got {}",
-                milestones,
-            )
-        # Check if the warmup_method is either 'constant' or 'linear'
-        if warmup_method not in ("constant", "linear"):
-            raise ValueError(
-                "Only 'constant' or 'linear' warmup_method accepted"
-                "got {}".format(warmup_method)
-            )
-            
-        self.milestones = milestones
-        self.warmup_gamma = warmup_gamma
-        self.warmup_factor = warmup_factor
-        self.warmup_iters = warmup_iters
-        self.warmup_method = warmup_method
-        super(WarmupMultiStepLR, self).__init__(optimizer, last_epoch)
+        else:
+            for i in range(len(self.milestones) - 1):
+                if self.milestones[i] <= self.last_epoch < self.milestones[i+1]:
+                    t = (
+                        self.last_epoch - self.milestones[i]) / (self.milestones[i+1] - self.milestones[i])
+                    return max(base_lr * (self.gamma ** i) * (self.gamma ** t), self.min_lr)
+            return max(base_lr * (self.gamma ** len(self.milestones)), self.min_lr)
 
-    def get_lr(self):
-        warmup_factor = 1
-        if self.last_epoch < self.warmup_iters:
-            if self.warmup_method == "constant":
-                warmup_factor = self.warmup_factor
-            elif self.warmup_method == "linear":
-                alpha = self.last_epoch / self.warmup_iters
-                warmup_factor = self.warmup_factor * (1 - alpha) + alpha
-        return [
-            base_lr
-            * warmup_factor
-            * self.warmup_gamma ** bisect_right(self.milestones, self.last_epoch)
-            for base_lr in self.base_lrs
-        ]
-         
-# Set up your model and optimizer
-model = nn.Linear(100, 10)  # Example model
-smooth_optimizer = optim.Adam(model.parameters(), lr=1.5e-4)
-warmup_milestone_optimizer = optim.Adam(model.parameters(), lr=1.5e-4)
-warmup_multistep_optimizer = optim.Adam(model.parameters(), lr=1.5e-4)
-warmup_decay_optimizer = optim.Adam(model.parameters(), lr=1.5e-4)
+    def _get_cosine_lr(self, base_lr):
+        # Assuming the last milestone is the end of the cosine decay.
+        T_max = self.milestones[-1] - self.warmup_epochs
 
-# Set up the scheduler
-epochs = 260
-steps_per_epoch = 1136  # Adjust this based on your actual steps per epoch
+        # If the current epoch is within the warmup phase, return the base learning rate.
+        if self.last_epoch < self.warmup_epochs:
+            return base_lr
 
-# Create the scheduler
-smooth_scheduler = WarmupDecayLR(smooth_optimizer, 
-                              milestones=[20, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 195, 210, 225, 240, 255],
-                              warmup_epochs=10,
-                              warmup_gamma=0.6,
-                              decay_method='smooth')
+        # If the current epoch is within the cosine decay phase, return the cosine decay learning rate.
+        elif self.last_epoch < self.milestones[-1]:
+            t = (self.last_epoch - self.warmup_epochs) / T_max
 
-warmup_decay = WarmupDecayLR(warmup_milestone_optimizer,
-                                    milestones=[20, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 195, 210, 225, 240, 255],
+            # Ensure that the learning rate does not drop below `min_lr`
+            return max(base_lr * 0.5 * (1 + math.cos(math.pi * t**self.cosine_power)), self.min_lr)
+
+        # If the current epoch is after the cosine decay phase, return the stabilized learning rate.
+        else:
+            return self.min_lr
+
+# Set up model
+lr = 1.5e-4
+model = nn.Linear(100, 10)
+nn.init.normal_(model.weight, mean=0, std=0.01)
+
+# Set up epochs
+epochs = 160
+
+# Set up optimizers
+linear_optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=0.0005)
+smooth_optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=0.0005)
+cosine_optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=0.0005)
+multistep_optimizer = optim.SGD(model.parameters(), lr=1.0e-3, weight_decay=0.0005, momentum=0.9, dampening=0.0, nesterov=True)
+
+# Create scheduler
+linear_scheduler = WarmupDecayLR(linear_optimizer,
+                                 milestones=[20, 30, 45, 60, 75,
+                                             90, 105, 120, 135, 150, 160],
+                                 warmup_epochs=10,
+                                 gamma=0.6,
+                                 decay_method='linear',
+                                 min_lr=1.0e-6,)
+
+smooth_scheduler = WarmupDecayLR(smooth_optimizer,
+                                 milestones=[20, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 195, 210, 225, 240, 255],
+                                 warmup_epochs=10,
+                                 gamma=0.6,
+                                 decay_method='smooth',
+                                 min_lr=1.0e-6,)
+
+cosine_scheduler = WarmupDecayLR(cosine_optimizer,
+                                 milestones=[20, 30, 45, 60, 75, 90,
+                                             105, 120, 135, 150, 160, 180],
+                                 warmup_epochs=10,
+                                 gamma=0.6,
+                                 cosine_power=0.35,
+                                 decay_method='cosine',
+                                 min_lr=1.0e-6,)
+
+multistep_scheduler = WarmupDecayLR(multistep_optimizer,
+                                    milestones=[20, 40, 60, 100, 120],
                                     warmup_epochs=10,
-                                    warmup_gamma=0.6,
-                                    decay_method='linear')
-
-warmup_multistep = WarmupMultiStepLR(warmup_multistep_optimizer,
-                                    milestones=[20, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, 195, 210, 225, 240, 255],
-                                    warmup_iters=10,
-                                    warmup_gamma=0.6,
-                                    warmup_factor=0.03,
-                                    warmup_method="linear")
+                                    gamma=0.25,
+                                    decay_method='linear',
+                                    min_lr=1.0e-6,)
 
 # Collect learning rates
+linear_learning_rates = []
 smooth_learning_rates = []
-warmup_decay_learning_rates = []
-warmup_multistep_learning_rates = []
+cosine_learning_rates = []
+multistep_learning_rates = []
 
 for ep in tqdm(range(epochs), total=epochs, desc='Collecting Learning Rates'):
-    for step in range(steps_per_epoch):
-        pass
-    
+    linear_learning_rates.append(linear_scheduler.optimizer.param_groups[0]['lr'])
     smooth_learning_rates.append(smooth_scheduler.optimizer.param_groups[0]['lr'])
-    warmup_decay_learning_rates.append(warmup_decay.optimizer.param_groups[0]['lr'])
-    warmup_multistep_learning_rates.append(warmup_multistep.optimizer.param_groups[0]['lr'])
-    
+    cosine_learning_rates.append(cosine_scheduler.optimizer.param_groups[0]['lr'])
+    multistep_learning_rates.append(multistep_scheduler.optimizer.param_groups[0]['lr'])
+
+    linear_scheduler.step()
     smooth_scheduler.step()
-    warmup_decay.step()
-    warmup_multistep.step()
-    
+    cosine_scheduler.step()
+    multistep_scheduler.step()
+
 # Plot the learning rates
 plt.figure(figsize=(12, 6))
+plt.plot(range(epochs), linear_learning_rates, label='WarmupDecayLR-Linear', color='orange')
 plt.plot(range(epochs), smooth_learning_rates, label='WarmupDecayLR-Smooth', color='blue')
-plt.plot(range(epochs), warmup_decay_learning_rates, label='WarmupDecayLR-Linear', color='red')
-plt.plot(range(epochs), warmup_multistep_learning_rates, label='WarmupMultiStepLR', color='green')
+plt.plot(range(epochs), cosine_learning_rates, label='WarmupDecayLR-Cosine', color='purple')
+plt.plot(range(epochs), multistep_learning_rates, label='MultiStepLR', color='green')
 plt.title('Learning Rate Schedule')
 plt.xlabel('Epochs')
 plt.ylabel('Learning Rate')

@@ -33,47 +33,83 @@ class ColorAugmentation(object):
 class Transformations:
     def __init__(self, dataset: Optional[str] = 'veri-776', configs: Optional[dict] = None):
         self.dataset = dataset
-        
+
         # Various transformations settings
         self.height = configs['height']
         self.width = configs['width']
         self.horizontal_flip_prob = configs['random_horizontal_flip_prob']
+        self.random_crop = tuple(configs['random_crop'])
         self.erasing_prob = configs['random_erasing_prob']
         self.jitter_brightness = configs['jitter_brightness']
         self.jitter_contrast = configs['jitter_contrast']
         self.jitter_saturation = configs['jitter_saturation']
         self.jitter_hue = configs['jitter_hue']
+        self.color_augmentation = configs['color_augmentation']
         self.padding = configs['padding']
         self.mean = configs['normalize_mean']   # ImageNet mean
         self.std = configs['normalize_std']     # ImageNet std
-  
-        # Specific transforms for Training
-        self.train_transform = transforms.Compose([
-            transforms.Resize((self.height, self.width)),                      # Resize to specified size
-            transforms.RandomCrop((self.height, self.width)),                  # Random crop to specified size
-            transforms.RandomHorizontalFlip(p=self.horizontal_flip_prob),      # Random horizontal flip
-            transforms.ColorJitter(brightness=self.jitter_brightness,          # Color Jitter
-                                   contrast=self.jitter_contrast,
-                                   saturation=self.jitter_saturation,
-                                   hue=self.jitter_hue),                     
-            transforms.Pad(self.padding),                                      # Pad the image with the specified padding
-            transforms.ToTensor(),                                             # Convert to tensor
-            ColorAugmentation(),                                               # Color Augmentation
-            transforms.Normalize(mean=self.mean,
-                                 std=self.std),                                # Normalize
-            transforms.RandomErasing(p=self.erasing_prob),                     # Random erasing with specified probability
-        ])
 
-        # Specific transforms for Validation
-        self.val_transform = transforms.Compose([
-            transforms.Resize((self.height, self.width)),                      # Resize to specified size
-            transforms.ToTensor(),                                             # Convert to tensor
-            transforms.Normalize(mean=self.mean,
-                                 std=self.std),                                # Normalize
-        ])
+        # ================= TRAIN TRANSFORMS =================
+        self.transform_train = []
         
+        # Resize to specified size
+        if (self.height != 0 and self.width != 0):
+            self.transform_train += [transforms.Resize((self.height, self.width))] 
+            
+        # Random crop to specified size
+        if (self.random_crop != (0, 0) or self.random_crop != None):
+            self.transform_train += [transforms.RandomCrop((self.height, self.width))]
+        
+        # Random horizontal flip
+        if (self.horizontal_flip_prob != 0.0):
+            self.transform_train += [transforms.RandomHorizontalFlip(p=self.horizontal_flip_prob)]
+            
+        # Color Jitter
+        if (self.jitter_brightness != 0.0 or self.jitter_contrast != 0.0 or self.jitter_saturation != 0.0 or self.jitter_hue != 0.0):
+            self.transform_train += [transforms.ColorJitter(brightness=self.jitter_brightness,
+                                                            contrast=self.jitter_contrast,
+                                                            saturation=self.jitter_saturation,
+                                                            hue=self.jitter_hue)]
+            
+        # Convert to tensor
+        self.transform_train += [transforms.ToTensor()]
+        
+        # Color augmentation
+        if (self.color_augmentation):
+            self.transform_train += [ColorAugmentation()]
+    
+        # Pad the image with the specified padding
+        if (self.padding != 0.0):
+            self.transform_train += [transforms.Pad(self.padding)]
+            
+        # Normalize the image with the specified mean and std
+        if (self.mean is not None and self.std is not None):
+            self.transform_train += [transforms.Normalize(mean=self.mean, std=self.std)]
+        
+        # Random erasing with specified probability
+        if (self.erasing_prob != 0):
+            self.transform_train += [transforms.RandomErasing(p=self.erasing_prob)]
+
+        self.train_transform = transforms.Compose(self.transform_train)
+        
+        # ================= VAL TRANSFORMS =================
+        self.transform_val = []
+
+        # Resize to specified size
+        if (self.height != 0 and self.width != 0):
+            self.transform_val += [transforms.Resize((self.height, self.width))] 
+            
+        # Convert to tensor
+        self.transform_val += [transforms.ToTensor()]
+
+        # Normalize the image with the specified mean and std
+        if (self.mean is not None and self.std is not None):
+            self.transform_val += [transforms.Normalize(mean=self.mean, std=self.std)]
+
+        self.val_transform = transforms.Compose(self.transform_val)
+
     def get_train_transform(self):
         return self.train_transform
-    
+
     def get_val_transform(self):
         return self.val_transform

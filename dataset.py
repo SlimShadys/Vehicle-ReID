@@ -3,7 +3,7 @@ import os
 import pickle
 import random
 from collections import defaultdict
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import numpy as np
 import torch
@@ -11,7 +11,7 @@ from datasets.transforms import Transformations
 from datasets.vehicle_id import VehicleID
 from datasets.veri_776 import Veri776
 from datasets.veri_wild import VeriWild
-from misc.utils import read_image
+from misc.utils import read_image, get_imagedata_info
 from torch.utils.data import Dataset
 from torch.utils.data.sampler import Sampler
 
@@ -32,29 +32,44 @@ class DatasetBuilder():
         if self.dataset_name == 'veri_776':
             self.dataset = Veri776(self.data_path, self.use_rptm)
         elif self.dataset_name == 'veri_wild':
-            self.dataset = VeriWild(self.data_path, self.dataset_size, False)
-        elif self.dataset_name == 'vehicle-id':
+            self.dataset = VeriWild(self.data_path, self.dataset_size, self.use_rptm)
+        elif self.dataset_name == 'vehicle_id':
             self.dataset = VehicleID(self.data_path, self.dataset_size, self.use_rptm)
         else:
             raise ValueError(f"Unknown dataset: {self.dataset_name}")
-        
-        # Transformations for the dataset
-        self.transforms = Transformations(dataset=self.dataset_name, configs=augmentation_configs)
-        
-        # Create the train and validation datasets
-        self.train_set = ImageDataset(overall_dataset = self.dataset,
-                                      data = self.dataset.train,
-                                      pkl_file = self.dataset.pkl_file,
-                                      transform = self.transforms.get_train_transform(),
-                                      train = True)
-        self.validation_set = ImageDataset(overall_dataset = self.dataset,
-                                           data = self.dataset.query + self.dataset.gallery,
-                                           pkl_file = None,
-                                           transform = self.transforms.get_val_transform(),
-                                           train=False)
 
+        # Transformations for the dataset
+        self.transforms = Transformations(
+            dataset=self.dataset_name, configs=augmentation_configs)
+
+        # Create the train and validation datasets
+        self.train_set = ImageDataset(overall_dataset=self.dataset,
+                                      data=self.dataset.train,
+                                      pkl_file=self.dataset.pkl_file,
+                                      transform=self.transforms.get_train_transform(),
+                                      train=True)
+        self.validation_set = ImageDataset(overall_dataset=self.dataset,
+                                           data=self.dataset.query + self.dataset.gallery,
+                                           pkl_file=None,
+                                           transform=self.transforms.get_val_transform(),
+                                           train=False)
+        verbose = True
+        if verbose:
+            num_train_pids, num_train_imgs, num_train_cams = get_imagedata_info(self.dataset.train)
+            num_query_pids, num_query_imgs, num_query_cams = get_imagedata_info(self.dataset.query)
+            num_gallery_pids, num_gallery_imgs, num_gallery_cams = get_imagedata_info(self.dataset.gallery)
+
+            print('Image Dataset statistics:')
+            print('/------------------------------------------\\')
+            print('|  Subset  |  # IDs | # Images | # Cameras |')
+            print('|------------------------------------------|')
+            print('|  Train   |  {:5d} | {:8d} | {:9d} |'.format(num_train_pids, num_train_imgs, num_train_cams))
+            print('|  Query   |  {:5d} | {:8d} | {:9d} |'.format(num_query_pids, num_query_imgs, num_query_cams))
+            print('|  Gallery |  {:5d} | {:8d} | {:9d} |'.format(num_gallery_pids, num_gallery_imgs, num_gallery_cams))
+            print('\\------------------------------------------/')
+        
 class ImageDataset(Dataset):
-    def __init__(self, overall_dataset, data, pkl_file, transform=None, train=True):
+    def __init__(self, overall_dataset: Union[VehicleID, Veri776, VeriWild], data, pkl_file, transform=None, train=True):
         """
         Args:
             overall_dataset (object): The overall dataset object.
@@ -67,12 +82,12 @@ class ImageDataset(Dataset):
         self.overall_dataset = overall_dataset
         self.dataset_name = overall_dataset.dataset_name
         self.pkl_file = pkl_file
-        
+
         # Load the index from the pickle file (Needed for RPTM Training)
         if (self.overall_dataset.use_rptm) and (self.pkl_file is not None) and (self.train):
-            with open(os.path.join(self.overall_dataset.data_path, self.pkl_file), 'rb') as handle:
+            with open(os.path.join('gms', self.dataset_name, self.pkl_file), 'rb') as handle:
                 self.index = pickle.load(handle)
-        
+
         self.data = data
         self.transform = transform
 
@@ -88,9 +103,9 @@ class ImageDataset(Dataset):
         # Apply the transform if it exists
         if self.transform is not None:
             img = self.transform(img)
-        
+
         # Custom indices for the dataset when using RPTM Training
-        if(self.overall_dataset.use_rptm) and (self.train):
+        if (self.overall_dataset.use_rptm) and (self.train):
             if self.dataset_name == 'veri_776':
                 index = 0 if self.data[idx][0] not in self.index else self.index[self.data[idx][0]][1]
             elif self.dataset_name == 'vehicle_id':
@@ -106,14 +121,16 @@ class ImageDataset(Dataset):
         img_paths, imgs, folders, indices, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps = zip(*batch)
 
         # Transform Car IDs and Images to Tensors
-        imgs = torch.stack(imgs, dim=0)                     # [batch_size, 3, height, width]
+        # [batch_size, 3, height, width]
+        imgs = torch.stack(imgs, dim=0)
         car_ids = torch.tensor(car_ids, dtype=torch.int64)  # [batch_size]
         cam_ids = torch.tensor(cam_ids, dtype=torch.int64)
 
         return img_paths, imgs, folders, indices, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps
-    
+
     def val_collate_fn(self, batch) -> tuple[list[str], torch.Tensor, torch.Tensor, torch.Tensor, int, int, int, str]:
-        img_paths, imgs, folders, indices, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps = zip(*batch)
+        img_paths, imgs, folders, indices, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps = zip(
+            *batch)
 
         # Transform Car IDs and Images to Tensors
         imgs = torch.stack(imgs, dim=0)                     # [batch_size, 3, height, width]
@@ -138,7 +155,7 @@ class RandomIdentitySampler(Sampler):
         self.num_instances = num_instances
         self.num_pids_per_batch = self.batch_size // self.num_instances
         self.index_dic = defaultdict(list)
-        
+
         # img_path, car_id, cam_id, model_id, color_id, type_id, timestamp
         for index, (_, _, pid, _, _, _, _, _) in enumerate(self.data_source):
             self.index_dic[pid].append(index)
@@ -194,7 +211,9 @@ class BalancedIdentitySampler(Sampler):
         self.batch_size = batch_size
 
         self.num_pids_per_batch = batch_size // self.num_instances
-        self.num_batches = len(self.data_source) // self.batch_size # Calculate the number of batches per epoch
+        
+        # Calculate the number of batches per epoch
+        self.num_batches = len(self.data_source) // self.batch_size
 
         self.index_pid = dict()
         self.pid_cam = defaultdict(list)
@@ -249,15 +268,15 @@ class BalancedIdentitySampler(Sampler):
 
     def __iter__(self):
         yield from self._finite_indices()
-                    
+
     def _finite_indices(self):
         np.random.seed(self._seed)
         batch_count = 0
-        
+
         for _ in range(self.num_batches):
             batch_indices = []
             identities = np.random.permutation(self.num_identities)[:self.num_pids_per_batch]
-            
+
             for kid in identities:
                 i = np.random.choice(self.pid_index[self.pids[kid]])
                 _, i_pid, i_cam, _, _, _, _ = self.data_source[i]
@@ -289,5 +308,5 @@ class BalancedIdentitySampler(Sampler):
 
             yield from batch_indices
             batch_count += 1
-        
+
         self.length = batch_count * self.batch_size

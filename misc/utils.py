@@ -1,4 +1,5 @@
 import os
+import shutil
 
 import numpy as np
 import torch
@@ -119,6 +120,21 @@ def load_model(model_path: str,
     print(f"Correctly loaded the model, optimizer, and scheduler from: {model_path}")
     return model, optimizer, scheduler_warmup, start_epoch
 
+# Get the number of pids, images, and cameras
+# Needed for printing the dataset statistics
+def get_imagedata_info(data):
+    car_ids, cam_ids = [], []
+    # img_path, folder, car_id, cam_id, model_id, color_id, type_id, timestamp
+    for _, _, car_id, cam_id, _, _, _, _ in data:
+        car_ids += [car_id]
+        cam_ids += [cam_id]
+    car_ids = set(car_ids)
+    cam_ids = set(cam_ids)
+    num_car_ids = len(car_ids)
+    num_cam_ids = len(cam_ids)
+    num_imgs = len(data)
+    return num_car_ids, num_imgs, num_cam_ids
+
 # Search function for getting the index of the data
 # Needed for RPTM Training
 def search(path):
@@ -212,6 +228,128 @@ def eval_func(distmat, q_pids, g_pids, q_camids, g_camids, max_rank=50, re_rank=
     mAP = np.mean(all_AP)
 
     return all_cmc, mAP, all_AP
+
+def eval_func_vehicle_id(distmat, q_pids, g_pids, q_camids, g_camids, max_rank=50, re_rank=False):
+    """Evaluation with vehicleid metric
+    Key: gallery contains one images for each test vehicles and the other images in test
+         use as query
+    """
+    num_q, num_g = distmat.shape
+
+    if num_g < max_rank:
+        max_rank = num_g
+        print('Note: number of gallery samples is quite small, got {}'.format(num_g))
+
+    indices = np.argsort(distmat, axis=1)
+    matches = (g_pids[indices] == q_pids[:, np.newaxis]).astype(np.int32)
+
+    # compute cmc curve for each query
+    all_cmc = []
+    all_AP = []
+    num_valid_q = 0.  # number of valid query
+
+    description = "Computing CMC and mAP" if not re_rank else "Computing CMC and mAP with re-ranking"
+    for q_idx in tqdm(range(num_q), desc=description, total=num_q):
+        # get query pid and camid
+        # remove gallery samples that have the same pid and camid with query
+        '''
+        q_pid = q_pids[q_idx]
+        q_camid = q_camids[q_idx]
+        order = indices[q_idx]
+        remove = (g_pids[order] == q_pid) & (g_camids[order] == q_camid) # original remove
+        '''
+        remove = False  # without camid imformation remove no images in gallery
+        keep = np.invert(remove)
+        # compute cmc curve
+        raw_cmc = matches[q_idx][keep]  # binary vector, positions with value 1 are correct matches
+        if not np.any(raw_cmc):
+            # this condition is true when query identity does not appear in gallery
+            continue
+
+        cmc = raw_cmc.cumsum()
+        cmc[cmc > 1] = 1
+
+        all_cmc.append(cmc[:max_rank])
+        num_valid_q += 1.
+
+        # compute average precision
+        # reference: https://en.wikipedia.org/wiki/Evaluation_measures_(information_retrieval)#Average_precision
+        num_rel = raw_cmc.sum()
+        tmp_cmc = raw_cmc.cumsum()
+        tmp_cmc = [x / (i + 1.) for i, x in enumerate(tmp_cmc)]
+        tmp_cmc = np.asarray(tmp_cmc) * raw_cmc
+        AP = tmp_cmc.sum() / num_rel
+        all_AP.append(AP)
+
+    assert num_valid_q > 0, 'Error: all query identities do not appear in gallery'
+
+    all_cmc = np.asarray(all_cmc).astype(np.float32)
+    all_cmc = all_cmc.sum(0) / num_valid_q
+    mAP = np.mean(all_AP)
+
+    return all_cmc, mAP, all_AP
+
+def visualize_ranked_results(distmat, dataset, save_dir='log/ranked_results', topk=10):
+    """
+    Visualize ranked results
+    Args:
+    - distmat: distance matrix of shape (num_query, num_gallery).
+    - dataset: a 2-tuple containing (query, gallery), each contains a list of (img_path, pid, camid);
+               for imgreid, img_path is a string, while for vidreid, img_path is a tuple containing
+               a sequence of strings.
+    - save_dir: directory to save output images.
+    - topk: int, denoting top-k images in the rank list to be visualized.
+    """
+    num_q, num_g = distmat.shape
+    query, gallery = dataset
+    indices = np.argsort(distmat, axis=1)
+
+    print('Visualizing top-{} ranks'.format(topk))
+    print('# query: {}\n# gallery {}'.format(num_q, num_g))
+    print('Saving images to "{}"'.format(save_dir))
+
+    if not os.path.exists(save_dir): os.makedirs(save_dir)
+
+    def _cp_img_to(src, dst, rank, prefix):
+        """
+        - src: image path or tuple (for vidreid)
+        - dst: target directory
+        - rank: int, denoting ranked position, starting from 1
+        - prefix: string
+        """
+        if isinstance(src, tuple) or isinstance(src, list):
+            dst = os.path.join(dst, prefix + '_top' + str(rank).zfill(3))
+
+            if not os.path.exists(dst): os.makedirs(dst)
+            for img_path in src:
+                shutil.copy(img_path, dst)
+        else:
+            dst = os.path.join(dst, prefix + '_top' + str(rank).zfill(3) + '_name_' + os.path.basename(src))
+            shutil.copy(src, dst)
+
+    for q_idx in tqdm(range(num_q), desc="Computing visualized ranked results", total=num_q):
+        # Simply copy the query image to the output directory
+        qimg_path, _, qpid, qcamid, _, _, _, _ = query[q_idx]
+        if isinstance(qimg_path, tuple) or isinstance(qimg_path, list):
+            qdir = os.path.join(save_dir, os.path.basename(qimg_path[0]))
+        else:
+            qdir = os.path.join(save_dir, os.path.basename(qimg_path))
+            
+        if not os.path.exists(qdir): os.makedirs(qdir)
+        
+        _cp_img_to(qimg_path, qdir, rank=0, prefix='query')
+
+        # Copy the ranked images to the output directory
+        rank_idx = 1
+        for g_idx in indices[q_idx, :]:
+            gimg_path, _, gpid, gcamid, _, _, _, _ = gallery[g_idx]
+            invalid = (qpid == gpid) & (qcamid == gcamid)
+            if not invalid:
+                _cp_img_to(gimg_path, qdir, rank=rank_idx, prefix='gallery')
+                rank_idx += 1
+                if rank_idx > topk:
+                    break
+    print("Done")
 
 def re_ranking(probFea, galFea, k1, k2, lambda_value, local_distmat=None, only_local=False):
     """

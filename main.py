@@ -3,7 +3,6 @@ import random
 import shutil
 import sys
 
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import yaml
@@ -23,21 +22,27 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)  # for multi-GPU
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    print("Correctly set the seed to: ", seed)
+    print("Correctly set the seed to:", seed)
 
-def main(config, seed):
-    
+def main(config, config_file, seed):
+
     # Set the seed for reproducibility
     set_seed(seed)
 
     # ============= VARIABLES =============
+    misc_configs = config['misc']
     dataset_configs = config['dataset']
     model_configs = config['model']
+    augmentation_configs = config['augmentation']
+    loss_configs = config['loss']
     training_configs = config['training']
     val_configs = config['validation']
-    loss_configs = config['loss']
-    augmentation_configs = config['augmentation']
+    test_configs = config['test']
 
+    # Misc variables
+    use_amp = misc_configs['use_amp']
+    output_dir = misc_configs['output_dir']
+    
     # Dataset variables
     data_path = dataset_configs['data_path']
     dataset_name = dataset_configs['dataset_name']
@@ -47,18 +52,8 @@ def main(config, seed):
 
     # Model parameters
     device = model_configs['device']
-    model = model_configs['model']
+    model_name = model_configs['model']
     pretrained = model_configs['pretrained']
-    
-    # Training parameters
-    output_dir = training_configs['output_dir']
-    batch_size = training_configs['batch_size']
-    num_workers = training_configs['num_workers']
-    use_amp = training_configs['use_amp']
-
-    # Validation parameters
-    batch_size_val = val_configs['batch_size']
-    val_interval = val_configs['val_interval']
 
     # Loss parameters
     loss_type = loss_configs['type']
@@ -68,6 +63,14 @@ def main(config, seed):
     label_smoothing = loss_configs['label_smoothing']
     apply_MALW = loss_configs['apply_MALW']
     use_rptm, _ = loss_configs['use_rptm']
+
+    # Training parameters
+    batch_size = training_configs['batch_size']
+    num_workers = training_configs['num_workers']
+
+    # Validation parameters
+    batch_size_val = val_configs['batch_size']
+    val_interval = val_configs['val_interval']
 
     # =====================================
 
@@ -80,19 +83,19 @@ def main(config, seed):
     print("|         ---        Rome, Italy        ---         |")
     print("|***************************************************|")
 
-    if(torch.cuda.is_available()):
+    if ('cuda' in device and torch.cuda.is_available()):
         print('Cuda available: {}'.format(torch.cuda.is_available()))
         if (torch.cuda.device_count() > 1):
             print(f"Detected multiple GPUs. Devices: {torch.cuda.device_count()}")
             print(f"Using the GPU number: {device.split(':')[1]}")
         device = torch.device(device=device)
-        
+
         print("GPU: " + torch.cuda.get_device_name(device))
         print("Total memory: {:.1f} GB".format((float(torch.cuda.get_device_properties(device).total_memory / (1024 ** 3)))))
     else:
         device = torch.device("cpu")
         print('Cuda not available, so using CPU. Please consider switching to a GPU runtime before running the notebook!')
-        
+
     print("===================================================")
     print(F"Torch version: {torch.__version__}")
     print("===================================================")
@@ -107,11 +110,13 @@ def main(config, seed):
     # Create Dataset and DataLoaders
     print(f"Building Dataset:")
     print(f"- Name: {dataset_name}")
-    if dataset_name in ['veri-wild', 'vehicle-id']:
+    if dataset_name in ['veri_wild', 'vehicle_id']:
         print(f"- Size: {dataset_size}")
     print("--------------------")
 
-    dataset_builder = DatasetBuilder(data_path=data_path, dataset_name=dataset_name, dataset_size=dataset_size, use_rptm=use_rptm, augmentation_configs=augmentation_configs)
+    dataset_builder = DatasetBuilder(data_path=data_path, dataset_name=dataset_name,
+                                     dataset_size=dataset_size, use_rptm=use_rptm,
+                                     augmentation_configs=augmentation_configs)
     train_dataset = dataset_builder.train_set       # Get the Train dataset
     val_dataset = dataset_builder.validation_set   # Get the Test dataset
     print(f"Dataset successfully built!")
@@ -124,7 +129,7 @@ def main(config, seed):
         sampler = BalancedIdentitySampler(dataset_builder.dataset.train, batch_size=batch_size, num_instances=num_instances)
     else:
         sampler = None
-        
+
     train_loader = DataLoader(train_dataset, batch_size=batch_size,
                               sampler=sampler,
                               shuffle=True if sampler is None else None,
@@ -136,25 +141,25 @@ def main(config, seed):
                             collate_fn=val_dataset.val_collate_fn,
                             num_workers=num_workers,
                             pin_memory=True, drop_last=False)
-    
+
     print("--------------------")
-    print(f"Building {model} model...")
+    print(f"Building {model_name} model...")
     model_builder = ModelBuilder(
-        model_name=model,
+        model_name=model_name,
         pretrained=pretrained,
         num_classes=num_classes[dataset_name],
         model_configs=model_configs
     )
 
     # Get the model and move it to the device
-    model = model_builder.move_to(device)      
-   
+    model = model_builder.move_to(device)
+
     # Print model summary
     print("--------------------")
     print(f"Model successfully built!")
     print("--------------------")
     print(f"Model Summary:")
-    print(f"\t- Architecture: {model}")
+    print(f"\t- Architecture: {model_name}")
     print(f"\t- Number of classes: {num_classes[dataset_name]}")
     print(f"\t- Pre-trained: {pretrained}")
     print(f'\t- Model device: {device}')
@@ -162,27 +167,30 @@ def main(config, seed):
     print("--------------------")
 
     # Define the loss function
-    loss_fn = LossBuilder(loss_type=loss_type, alpha=alpha, k=k, margin=margin, label_smoothing=label_smoothing, apply_MALW=apply_MALW, batch_size=batch_size, use_amp=use_amp)
+    loss_fn = LossBuilder(loss_type=loss_type, alpha=alpha, k=k, margin=margin,
+                          label_smoothing=label_smoothing, apply_MALW=apply_MALW,
+                          batch_size=batch_size, use_amp=use_amp)
 
     # Create the output directory and save the config file
     print("Creating the output directory...")
-    if(os.path.exists(output_dir) == False):
+    if (os.path.exists(output_dir) == False):
         os.makedirs(output_dir)
         print(f"Output directory created: {output_dir}")
-    
+
     # Save the config file
-    output_config = os.path.join(output_dir, 'config.yml')
-    shutil.copy('config.yml', output_config)
+    output_config = os.path.join(output_dir, config_file)
+    shutil.copy(config_file, output_config)
     print(f"Config file saved to: {output_config}")
-    
+
     # Create the Trainer
     trainer = Trainer(
         model=model,
         val_interval=val_interval,
-        dataloaders={'train': train_loader, 'val': {val_loader, len(dataset_builder.dataset.query)}, 'dataset': dataset_builder.dataset, 'transform': dataset_builder.transforms},
+        dataloaders={'train': train_loader, 'val': {val_loader, len(dataset_builder.dataset.query)},
+                     'dataset': dataset_builder.dataset, 'transform': dataset_builder.transforms},
         loss_fn=loss_fn,
         device=device,
-        configs=(training_configs, val_configs, loss_configs, augmentation_configs)
+        configs=(misc_configs, augmentation_configs, loss_configs, training_configs, val_configs, test_configs)
     )
     trainer.run()
 
@@ -193,13 +201,14 @@ if __name__ == '__main__':
         print("You might be using an IDE to run the script or forgot to append the config file. Running with default config file: 'config.yml'")
     else:
         config_file = sys.argv[1]
-        
+
     # Parameters from config.yml file
     with open(config_file, 'r') as f:
         config = yaml.load(f, yaml.FullLoader)['reid']
-    
+
     # Get the seed from the config
-    seed = config.get('seed', 2047315)  # Default to 2047315 if not specified
-    
+    # Default to 2047315 if not specified
+    seed = config.get('misc', {}).get('seed', 2047315)
+
     # Run the main function with the seed
-    main(config, seed)
+    main(config, config_file, seed)

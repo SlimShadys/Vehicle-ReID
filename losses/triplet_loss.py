@@ -18,11 +18,11 @@ class TripletLoss(object):
     def __call__(self, global_feat, labels, normalize_feature=False):
         if normalize_feature:
             global_feat = normalize(global_feat, axis=-1)
-            
+
         dist_mat = euclidean_dist(global_feat, global_feat, self.use_amp, train=True)
         dist_ap, dist_an, _, _ = self.hard_example_mining(dist_mat, labels, return_inds=False)
         y = dist_an.new().resize_as_(dist_an).fill_(1)
-        
+
         if self.margin is not None:
             loss = self.ranking_loss(dist_an, dist_ap, y)
         else:
@@ -69,8 +69,8 @@ class TripletLoss(object):
         if return_inds:
             # shape [N, N]
             ind = (labels.new().resize_as_(labels)
-                .copy_(torch.arange(0, N).long())
-                .unsqueeze(0).expand(N, N))
+                   .copy_(torch.arange(0, N).long())
+                   .unsqueeze(0).expand(N, N))
             # shape [N, 1]
             p_inds = torch.gather(
                 ind[is_pos].contiguous().view(N, -1), 1, relative_p_inds.data)
@@ -84,9 +84,9 @@ class TripletLoss(object):
             n_inds = None
         return dist_ap, dist_an, p_inds, n_inds
 
-class TripletLossV2(nn.Module):
+class TripletLossRPTM(nn.Module):
     def __init__(self, margin=0.3, use_amp=False):
-        super(TripletLossV2, self).__init__()
+        super(TripletLossRPTM, self).__init__()
         self.margin = margin
         self.use_amp = use_amp
         self.ranking_loss = nn.MarginRankingLoss(margin=margin)
@@ -105,7 +105,7 @@ class TripletLossV2(nn.Module):
         dist = dist.half() if self.use_amp else dist
         dist.addmm_(inputs, inputs.t(), beta=1, alpha=-2)
         dist = dist.clamp(min=1e-12).sqrt()  # for numerical stability
-        
+
         # For each anchor, find the hardest positive and negative
         mask = targets.expand(n, n).eq(targets.expand(n, n).t())
         dist_ap, dist_an = [], []

@@ -18,7 +18,7 @@ class ModelBuilder:
         self.pretrained = pretrained
         self.num_classes = num_classes
         self.model_configs = model_configs or {}
-        
+
         # Define the various model builders
         # - resnet  : ResNet family
         # - vit     : Vision Transformer (ViT)
@@ -26,10 +26,10 @@ class ModelBuilder:
             'resnet': self.build_resnet,
             'vit': self.build_vit,
         }
-        
+
         # Supported ResNet models
         self.resnet_models = list(resnet_urls.keys())
-        
+
         # Build the whole model
         self.model = self.build_model()
 
@@ -44,7 +44,7 @@ class ModelBuilder:
     def build_resnet(self):
         if self.model_name not in self.resnet_models:
             raise ValueError(f"Unsupported ResNet model: {self.model_name}")
-                
+
         if 'ibn' in self.model_name:
             if self.model_name == 'resnet50_ibn_a':
                 layers = [3, 4, 6, 3]
@@ -52,16 +52,16 @@ class ModelBuilder:
                 layers = [3, 4, 23, 3]
             else:
                 raise ValueError(f"Unsupported IBN model: {self.model_name}")
-            
+
             return ResNet_IBN(block=Bottleneck_IBN,
-                                    layers=layers,
-                                    num_classes=self.num_classes,
-                                    fc_dims=None,
-                                    dropout_p=None,
-                                    use_gem=self.model_configs.get('use_gem', False),
-                                    use_stride=self.model_configs.get('use_stride', False),
-                                    use_bottleneck=self.model_configs.get('use_bottleneck', False),
-                                    pretrained=(self.pretrained, resnet_urls[self.model_name]))
+                              layers=layers,
+                              num_classes=self.num_classes,
+                              fc_dims=None,
+                              dropout_p=None,
+                              use_gem=self.model_configs.get('use_gem', False),
+                              use_stride=self.model_configs.get('use_stride', False),
+                              use_bottleneck=self.model_configs.get('use_bottleneck', False),
+                              pretrained=(self.pretrained, resnet_urls[self.model_name]))
         else:
             return ResNet(self.model_name,
                           self.num_classes,
@@ -77,7 +77,7 @@ class ModelBuilder:
     def move_to(self, device):
         self.model = self.model.to(device)
         return self.model
-    
+
     def get_number_trainable_parameters(self):
         return sum(p.numel() for p in self.model.parameters() if p.requires_grad)
 

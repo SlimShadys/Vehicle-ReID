@@ -5,6 +5,7 @@ torchvision
 pytorch-metric-learning
 pandas
 tqdm
+numpy==1.24.1
 
 # From now on, the libraries are needed for the Tracking System
 cycler==0.11.0

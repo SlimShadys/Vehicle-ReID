@@ -1,4 +1,6 @@
 import os
+import pickle
+import shutil
 
 class VeriWild():
     def __init__(self, data_path, dataset_size='small', use_rptm=False):
@@ -7,8 +9,8 @@ class VeriWild():
         self.data_path = os.path.join(data_path, 'VeRi-Wild')
         self.dataset_sizes = {'small': 3000, 'medium': 5000, 'large': 10000} # Number of test images - 3000 (Small), 5000 (Medium), 10000 (Large)
         self.num_test = self.dataset_sizes[dataset_size]
-        self.use_rptm = False
 
+        # Vehicle Infos
         self.vehicle_infos = self.get_vehicle_infos(os.path.join(self.data_path, 'train_test_split', 'vehicle_info.txt'))
 
         # Directory
@@ -22,7 +24,46 @@ class VeriWild():
         # Relabel the train set only while keeping the original IDs for the query and gallery sets
         self.train = self.relabel_ids(self.train)
 
+        # Number of unique car IDs
         self.len = self.get_unique_car_ids()
+
+        # Whether to init Dataset for RPTM Training or not
+        self.use_rptm = use_rptm
+        self.pkl_file = None
+        self.max_negative_labels = 40671
+
+        if (self.use_rptm):
+            self.gms = {}
+            self.pidx = {}
+
+            self.pkl_file = f'index_vp_{self.dataset_name}.pkl'
+            gms_path = os.path.join('gms', self.dataset_name)
+            entries = sorted(os.listdir(gms_path))
+
+            # Loop through the files and load the GMS features
+            for name in entries:
+                f = open((os.path.join(gms_path, name)), 'rb')
+                if name == 'featureMatrix.pkl':
+                    s = name[0:13]
+                else:
+                    s = name[0:3]
+                self.gms[s] = pickle.load(f)
+                f.close
+
+            # (img_path, folder, car_id, cam_id, model_id, color_id, type_id, timestamp)
+            for _, folder, car_id, _, _, _, _, _ in self.train:
+                self.pidx[folder] = car_id
+
+            # Create the splits directory if it does not exist
+            split_dir = os.path.join(self.data_path, 'splits')
+            if not os.path.exists(split_dir):
+                print("Splits not found. Creating splits for RPTM training...")
+                src_root = os.path.join(self.data_path, 'images')
+                for i in os.listdir(src_root):
+                    folder_name = i.split('_', 2)[0][1:]
+                    if not os.path.exists(os.path.join(split_dir, folder_name)):
+                        os.makedirs(os.path.join(split_dir, folder_name))
+                    shutil.copyfile(os.path.join(src_root, i), os.path.join(split_dir, folder_name, i))
 
     def relabel_ids(self, dataset):
         all_pids = {}
@@ -41,7 +82,7 @@ class VeriWild():
         # Open the file with the correct encoding
         with open(file_path, 'r') as file:
             lines = [line.strip().split(';') for line in file.readlines()]
-        
+
         # Dictionary to store all items
         vehicle_infos = {}
 
@@ -98,7 +139,7 @@ class VeriWild():
         # Read query file names
         with open(file_path, 'r') as file:
             lines = [line.strip().split(' ') for line in file.readlines()]
-                
+
         # Iterate through each Item element
         for line in lines:
             # Retrieve the row from self.vehicle_infos using the vehicle ID and the dictionary using the vehicle_img
@@ -112,14 +153,30 @@ class VeriWild():
             except StopIteration:
                 print(f"No matching row found for vehicle_img {vehicle_img}")
 
+            # Create the folder name, starting from the car ID
+            folder = str(result['vehicle_ID'])
+            if (len(folder) == 1):
+                folder = '0000' + folder
+            elif (len(folder) == 2):
+                folder = '000' + folder
+            elif (len(folder) == 3):
+                folder = '00' + folder
+            elif (len(folder) == 4):
+                folder = '0' + folder
+            else:
+                pass
+
             # (img_path, folder, car_id, cam_id, model_id, color_id, type_id, timestamp)
             dataset.append((os.path.join(self.img_dir, line[0]), # img_path
-                            None, # Folder | Not necessary for this dataset as we do not have the GMS features
+                            folder, # Folder
                             result['vehicle_ID'],
                             result['camera_ID'],
-                            result['model_ID'], # result['model_name'] -> If we want the string name of the model
-                            result['color_ID'], # result['color_name'] -> If we want the string name of the color
-                            result['type_ID'], # result['type_name'] -> If we want the string name of the type
+                            # result['model_name'] -> If we want the string name of the model
+                            result['model_ID'],
+                            # result['color_name'] -> If we want the string name of the color
+                            result['color_ID'],
+                            # result['type_name'] -> If we want the string name of the type
+                            result['type_ID'],
                             result['timestamp']))
         return dataset
 

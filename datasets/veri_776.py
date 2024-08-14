@@ -12,9 +12,9 @@ class Veri776():
         self.data_path = os.path.join(data_path, 'VeRi-776')
         self.train_labels = self.get_labels(os.path.join(self.data_path, 'train_label.xml'))
         self.test_labels = self.get_labels(os.path.join(self.data_path, 'test_label.xml'))
-        
+
         # Directories
-        self.train_dir = os.path.join(self.data_path,'image_train')
+        self.train_dir = os.path.join(self.data_path, 'image_train')
         self.query_dir = os.path.join(self.data_path, 'image_query')
         self.gallery_dir = os.path.join(self.data_path, 'image_test')
 
@@ -23,24 +23,28 @@ class Veri776():
 
         # Test (query and gallery)
         self.gallery = self.get_list(self.test_labels, self.gallery_dir)
-        self.query = self.get_list(None, self.query_dir) # No details for the query set
+        # No details for the query set
+        self.query = self.get_list(None, self.query_dir)
 
         # Junk index and GT index
         self.indices = self.get_indices('name_query.txt', 'jk_index.txt', 'gt_index.txt')
 
+        # Number of unique car IDs
         self.len = self.get_unique_car_ids()
 
         # Whether to init Dataset for RPTM Training or not
         self.use_rptm = use_rptm
         self.pkl_file = None
-        if(self.use_rptm):
+        self.max_negative_labels = 770
+        
+        if (self.use_rptm):
             self.gms = {}
             self.pidx = {}
-            
-            self.pkl_file = 'index_vp.pkl'
-            gms_path = os.path.join('gms', 'veri')
+
+            self.pkl_file = f'index_vp_{self.dataset_name}.pkl'
+            gms_path = os.path.join('gms', self.dataset_name)
             entries = sorted(os.listdir(gms_path))
-            
+
             # Loop through the files and load the GMS features
             for name in entries:
                 f = open((os.path.join(gms_path, name)), 'rb')
@@ -50,16 +54,15 @@ class Veri776():
                     s = name[0:3]
                 self.gms[s] = pickle.load(f)
                 f.close
-                
-            # (img_path, car_id, cam_id, model_id, color_id, type_id, timestamp)
-            for img_path, _, car_id, _, _, _, _, _ in self.train:
-                path = img_path.split('\\', 4)[-1] # Extract the image name from the path
-                folder = path.split('_', 1)[0][1:] # Extract the folder name from the image name
+
+            # (img_path, folder, car_id, cam_id, model_id, color_id, type_id, timestamp)
+            for _, folder, car_id, _, _, _, _, _ in self.train:
                 self.pidx[folder] = car_id
-            
+
             # Create the splits directory if it does not exist
             split_dir = os.path.join(self.data_path, 'splits')
             if not os.path.exists(split_dir):
+                print("Splits not found. Creating splits for RPTM training...")
                 src_root = os.path.join(self.data_path, 'image_train')
                 for i in os.listdir(src_root):
                     folder_name = i.split('_', 2)[0][1:]
@@ -94,20 +97,26 @@ class Veri776():
         # Open the file with the correct encoding
         with open(file_path, 'r', encoding='gb2312') as file:
             xml_content = file.read()
-        
+
         # Parse the XML string
         root = ET.fromstring(xml_content)
-        
+
         # Dictionary to store all items
         labels_dict = {}
-        
+
         # Iterate through each Item element
         for item in root.findall('.//Item'):
             # Extract numeric part of cameraID
             camera_id_str = item.get('cameraID')
             vehicle_id_str = item.get('vehicleID')
-            camera_id_num = int(re.search(r'\d+', camera_id_str).group()) - 1 # Subtract 1 to start from 0
-            car_id_num = int(re.search(r'\d+', vehicle_id_str).group()) - 1 # Subtract 1 to start from 0
+            # Subtract 1 to start from 0
+            camera_id_num = int(re.search(r'\d+', camera_id_str).group()) - 1
+            # Subtract 1 to start from 0
+            car_id_num = int(re.search(r'\d+', vehicle_id_str).group()) - 1
+
+            # Various checks to ensure the data is correct
+            if car_id_num == -1:
+                continue  # Junk images are just ignored
 
             item_info = {
                 'vehicle_ID': car_id_num,
@@ -118,7 +127,7 @@ class Veri776():
                 'timestamp': 'None'
             }
             labels_dict[item.get('imageName')] = item_info
-        
+
         return labels_dict
 
     def get_list(self, labels, dir_path):
@@ -130,13 +139,21 @@ class Veri776():
         img_paths = glob.glob(os.path.join(dir_path, '*.jpg'))
 
         for img_path in img_paths:
-            if(add_details):
+            if (add_details):
                 try:
                     # Details
                     car_detail = labels[os.path.basename(img_path)]
-                    folder = (img_path.split('\\', 4)[-1]).split('_', 1)[0][1:] # Extract folder value (Needed for RPTM)
+                    # Extract folder value (Needed for RPTM)
+                    folder = (img_path.split(os.path.sep, 4)[-1]).split('_', 1)[0][1:]
                     car_id = car_detail['vehicle_ID']
                     cam_id = car_detail['camera_ID']
+
+                    # Various checks to ensure the data is correct
+                    if car_id == -1:
+                        continue  # Junk images are just ignored
+                    assert 0 <= car_id <= 1501 # pid == 0 means background
+                    assert 0 <= cam_id <= 19   # Check if the camera ID is within the range
+                    
                     model_id = car_detail['model_ID']
                     type_id = car_detail['type_ID']
                     color_id = car_detail['color_ID']
@@ -177,14 +194,16 @@ class Veri776():
         # This should happen only when we are dealing with the query set
         # or, in general, if we want to recover the details from the image name
         img_full_string = os.path.basename(img_path).split('_')
-        
+
         # Extract folder value (Needed for RPTM)
-        folder = (img_path.split('\\', 4)[-1]).split('_', 1)[0][1:]
+        folder = (img_path.split(os.path.sep, 4)[-1]).split('_', 1)[0][1:]
 
         # Extract the vehicle and camera IDs
-        car_id_num = int(re.search(r'\d+', img_full_string[0]).group()) - 1 # Subtract 1 to start from 0
-        camera_id_num = int(re.search(r'\d+', img_full_string[1]).group()) - 1 # Subtract 1 to start from 0
-        
+        # Subtract 1 to start from 0
+        car_id_num = int(re.search(r'\d+', img_full_string[0]).group()) - 1
+        # Subtract 1 to start from 0
+        camera_id_num = int(re.search(r'\d+', img_full_string[1]).group()) - 1
+
         # Details | Color ID and Type ID are not available in the image name, so we set them to -1
         car_id = car_id_num
         cam_id = camera_id_num
