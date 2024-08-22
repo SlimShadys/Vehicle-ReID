@@ -16,7 +16,7 @@ def str2int(car_id_num: str, dataset: str):
             car_id_num = '0' + str(car_id_num)
         else:
             pass
-    elif dataset == 'vehicle_id' or dataset == 'veri_wild':
+    elif dataset == 'vehicle_id' or dataset == 'veri_wild' or dataset == 'vru':
         if len(car_id_num) == 1:
             car_id_num = '0000' + car_id_num
         elif len(car_id_num) == 2:
@@ -127,7 +127,7 @@ def get_dict(dataset: str, train_file: str, img_dir: str):
         with open(train_file, 'r') as file:
             lines = [line.strip().split(' ') for line in file.readlines()]
 
-        # Iterate through each Item element
+        # Iterate through each line
         for line in tqdm(lines, desc='Splitting train images'):
             vehicle_id = line[0].split('/')[0]
             image_name = line[0].split('/')[1]
@@ -142,11 +142,11 @@ def get_dict(dataset: str, train_file: str, img_dir: str):
 
             new_vehicle_id = original_to_new_id[vehicle_id]
             class_images[new_vehicle_id].append(full_image_path)
-    elif (dataset == 'vehicle_id'):
+    elif (dataset == 'vehicle_id') or (dataset == 'vru'):
         with open(train_file, 'r') as file:
             lines = [line.strip() for line in file.readlines()]
 
-        # Iterate through each Item element
+        # Iterate through each line
         for line in tqdm(lines, desc='Splitting train images'):
             image_name = line.split(' ')[0]
             vehicle_id = line.split(' ')[1]
@@ -160,7 +160,7 @@ def get_dict(dataset: str, train_file: str, img_dir: str):
                 new_id_counter += 1
 
             new_vehicle_id = original_to_new_id[vehicle_id]
-            class_images[new_vehicle_id].append(full_image_path)
+            class_images[new_vehicle_id].append(full_image_path)        
     else:
         raise ValueError(f"Unknown dataset: {dataset}")
 
@@ -169,10 +169,10 @@ def get_dict(dataset: str, train_file: str, img_dir: str):
 
 # ========================== MAIN ========================== #
 # Set up paths
-dataset = 'veri_776'  # 'veri_776' / 'veri_wild' / 'vehicle_id'
+dataset = 'vru'  # 'veri_776' / 'veri_wild' / 'vehicle_id' / 'vru'
 base_datapath = 'data'
 gms_path = 'gms'
-image_size = (224, 224)
+image_size = (320, 320)
 verbose = False
 
 if (dataset == 'veri_776'):
@@ -187,6 +187,10 @@ elif (dataset == 'veri_wild'):
 elif (dataset == 'vehicle_id'):
     data_path = os.path.join(base_datapath, 'VehicleID')
     img_dir = os.path.join(data_path, 'image')
+    train_file = os.path.join(data_path, 'train_test_split', 'train_list.txt')
+elif (dataset == 'vru'):
+    data_path = os.path.join(base_datapath, 'VRU')
+    img_dir = os.path.join(data_path, 'Pic')
     train_file = os.path.join(data_path, 'train_test_split', 'train_list.txt')
 else:
     raise ValueError(f"Unknown dataset: {dataset}")

@@ -10,7 +10,7 @@ class VehicleID():
         self.dataset_name = 'vehicle_id'
         self.data_path = os.path.join(data_path, 'VehicleID')
         self.dataset_sizes = {'small': 800, 'medium': 1600, 'large': 2400} # Number of test images - 800 (Small), 1600 (Medium), 2400 (Large)
-        self.num_test = self.dataset_sizes[dataset_size]
+        self.test_size = self.dataset_sizes[dataset_size]
 
         # Vehicle Infos
         self.vehicle_infos = self.get_vehicle_infos(os.path.join(self.data_path, 'attribute'))
@@ -22,7 +22,6 @@ class VehicleID():
         self.train = self.get_list(os.path.join(self.data_path, 'train_test_split', 'train_list.txt'), relabel=True)
 
         # Get test size
-        self.test_size = self.dataset_sizes[dataset_size]
         if self.test_size == 800:
             self.test_list = os.path.join(self.data_path, 'train_test_split', 'test_list_800.txt')
         elif self.test_size == 1600:
@@ -57,7 +56,7 @@ class VehicleID():
                 if name == 'featureMatrix.pkl':
                     s = name[0:13]
                 else:
-                    s = name[0:3]
+                    s = name.split('.')[0]
                 self.gms[s] = pickle.load(f)
                 f.close
 

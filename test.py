@@ -1,13 +1,14 @@
 import os
 import random
 import sys
-
+import matplotlib.pyplot as plt
+import seaborn as sns
 import numpy as np
 import torch
 import yaml
 from dataset import DatasetBuilder
 from datasets.transforms import Transformations
-from misc.utils import euclidean_dist, normalize, read_image
+from misc.utils import euclidean_dist, read_image
 from model import ModelBuilder
 from torch.utils.data import DataLoader
 from train import Trainer
@@ -23,6 +24,104 @@ def set_seed(seed):
     torch.backends.cudnn.benchmark = False
     print("Correctly set the seed to:", seed)
 
+def compute_two_images_similarity(model, device, similarity, normalize_embeddings, val_transform, paths):
+        # Read 2 images from the config_test.yml file
+        path_img_1, path_img_2 = paths
+        
+        print(F"Reading the following images:")
+        print(F"- {path_img_1}")
+        print(F"- {path_img_2}")
+
+        img1 = read_image(path_img_1)
+        img2 = read_image(path_img_2)
+        
+        # Apply validation transformations
+        img1 = val_transform(img1).unsqueeze(0).to(device)
+        img2 = val_transform(img2).unsqueeze(0).to(device)
+
+        features_1 = model(img1, training=False)
+        features_2 = model(img2, training=False)
+
+        # Normalize the embeddings
+        if normalize_embeddings:
+            print("Normalizing!")
+            # Normalize embeddings for the Metric Loss
+            features_1 = torch.nn.functional.normalize(features_1, p=2, dim=1)
+            features_2 = torch.nn.functional.normalize(features_2, p=2, dim=1)
+
+        # Calculate the L2 distance between the 2 images
+        # Smaller distances indicate higher similarity, while larger distances indicate less similarity
+        if similarity == 'euclidean':
+            distance = euclidean_dist(features_1, features_2, train=False)
+        # Calculate the Cosine similarity between the 2 images
+        # Larger values indicate higher similarity, while smaller values indicate less similarity
+        elif similarity == 'cosine':
+            distance = torch.nn.functional.cosine_similarity(features_1, features_2).mean()
+        else:
+            raise ValueError(f"Unsupported similarity metric: {similarity}")
+
+        return distance
+
+def compute_multiple_images_similarity(model, device, similarity, normalize_embeddings, val_transform):
+    directory = os.path.join('data', 'test')
+    images = []
+    for filename in os.listdir(directory):
+        if filename.endswith((".png", ".jpg", ".jpeg")):
+            img_path = os.path.join(directory, filename)
+            img = read_image(img_path)
+            img_tensor = val_transform(img)
+            images.append(img_tensor)
+
+    images = torch.stack(images).to(device)
+    
+    with torch.no_grad():
+        embeddings = model(images).squeeze().to(device)
+        
+    n = len(embeddings)
+    similarity_matrix = torch.zeros((n, n))
+    
+    for i in range(n):
+        for j in range(i+1, n):  # Only compute upper triangle
+            
+            # Calculate the similarity between the embeddings
+            if similarity == 'euclidean':
+                similarity = euclidean_dist(embeddings[i].unsqueeze(0), embeddings[j].unsqueeze(0), train=False)
+            elif similarity == 'cosine':
+                similarity = torch.nn.functional.cosine_similarity(embeddings[i].unsqueeze(0), embeddings[j].unsqueeze(0)).mean().item()
+            
+            # Since Matrix is symmetric, we can set both values at the same time
+            similarity_matrix[i, j] = similarity
+            similarity_matrix[j, i] = similarity
+
+    # Get image names
+    image_names = [f for f in os.listdir(directory) if f.endswith((".png", ".jpg", ".jpeg"))]
+    
+    # Convert tensor to numpy array if it's not already
+    if torch.is_tensor(similarity_matrix):
+        similarity_matrix = similarity_matrix.cpu().numpy()
+
+    # Create a mask to hide the upper triangle
+    mask = np.triu(np.ones_like(similarity_matrix, dtype=bool))
+
+    # Set up the matplotlib figure
+    plt.figure(figsize=(12, 10))
+    
+    # Create heatmap
+    sns.heatmap(similarity_matrix, 
+                mask=mask,
+                cmap="YlGnBu",
+                vmin=-1, vmax=1,
+                annot=True,
+                fmt=".2f",
+                square=True,
+                xticklabels=image_names,
+                yticklabels=image_names)
+
+    plt.title("Image Similarity Matrix")
+    plt.tight_layout()
+    plt.show()
+    exit(1)
+            
 def main(config, seed):
 
     # Set the seed for reproducibility
@@ -61,14 +160,20 @@ def main(config, seed):
 
     # Test parameters
     run_reid_metrics = test_configs['run_reid_metrics']
+    stack_images = test_configs['stack_images']
+    similarity = test_configs['similarity']
     normalize_embeddings = test_configs['normalize_embeddings']
     model_val_path = test_configs['model_val_path']
+    img_path_1 = test_configs['path_img_1']
+    img_path_2 = test_configs['path_img_2']
     # =====================================
 
+    # Number of classes in each dataset (Only for ID classification tasks, hence only training set is considered)
     num_classes = {
         'veri_776': 576,
         'veri_wild': 30671,
         'vehicle_id': 13164,
+        'vru': 7086,
     }
 
     print("--------------------")
@@ -85,6 +190,7 @@ def main(config, seed):
 
     # Load parameters from a .pth file
     if (model_val_path is not None):
+        print("Loading model parameters from file...")
         if ('ibn' in model_name):
             model.load_param(model_val_path)
         else:
@@ -96,38 +202,21 @@ def main(config, seed):
     print(model)
 
     if not run_reid_metrics:
-        # Read 2 images from /data/test
-        path_img_1 = os.path.join("data", "test", "honda_f.jpg")
-        path_img_2 = os.path.join("data", "test", "honda_f_2.jpg")
-        print(F"Reading the following images:")
-        print(F"- {path_img_1}")
-        print(F"- {path_img_2}")
-
-        img1 = read_image(path_img_1)
-        img2 = read_image(path_img_2)
-
         # Define the validation transformations
         transforms = Transformations(configs=augmentation_configs)
         val_transform = transforms.get_val_transform()
 
-        # Apply validation transformations
-        img1 = val_transform(img1).unsqueeze(0).to(device)
-        img2 = val_transform(img2).unsqueeze(0).to(device)
+        if stack_images == True:
+            # No distance return, since it simply plots the similarity matrix which is more intuitive
+            compute_multiple_images_similarity(model, device, similarity, normalize_embeddings, val_transform)
+        else:
+            distance = compute_two_images_similarity(model, device, similarity, normalize_embeddings, val_transform, [img_path_1, img_path_2])
 
-        features_1 = model(img1, training=False)
-        features_2 = model(img2, training=False)
-
-        # Normalize the embeddings
-        if normalize_embeddings:
-            # Normalize embeddings for the Metric Loss
-            features_1 = normalize(features_1)
-            # Normalize embeddings for the Metric Loss
-            features_2 = normalize(features_2)
-
-        # Calculate the L2 distance between the 2 images
-        # Smaller distances indicate higher similarity, while larger distances indicate less similarity
-        distance = euclidean_dist(features_1, features_2, train=False)
-        print(f"Distance between the 2 images: {distance.item():.4f}")
+            if (similarity == 'cosine'):
+                print(f"Similarity between the 2 images: {distance}")
+            else:
+                print(f"Distance between the 2 images: {distance}")
+                
     else:
         # Create Dataset and DataLoaders
         print(f"Building Dataset:")
@@ -152,14 +241,12 @@ def main(config, seed):
         trainer = Trainer(
             model=model,
             val_interval=0,
-            dataloaders={'train': None,
-                         'val': {val_loader, len(dataset_builder.dataset.query)},
-                         'dataset': dataset_builder.dataset,
-                         'transform': dataset_builder.transforms},
+            dataloaders={'train': None, 'val': {val_loader, len(dataset_builder.dataset.query)},
+                        'dataset': dataset_builder.dataset, 'transform': dataset_builder.transforms},
             loss_fn=None,
             device=device,
             configs=(misc_configs, None, None, None, val_configs, test_configs)
-        )
+        )        
         trainer.validate(save_results=False)
 
 # Usage: python test.py <path_to_config.yml>

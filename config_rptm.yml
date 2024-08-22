@@ -1,18 +1,18 @@
-# NOTE n.1 : If sampler_type "random" or "balanced" is selected, batch_size must be divisible by num_instances
-# NOTE n.2 : If sampler_type "random" or "balanced" is selected, loss type must be TripletLoss
-# NOTE n.3 : If use_rptm is True, loss must be TripletLossRPTM
+# NOTE n.1 : If sampler_type "random" or "balanced" is selected, batch_size must be divisible by num_instances.
+# NOTE n.2 : If sampler_type "random" or "balanced" is selected, loss type must be TripletLoss.
+# NOTE n.3 : If use_rptm is True, loss must be TripletLossRPTM.
 
 reid:
   # === MISC CONFIGURATION ===
   misc:
     seed: 2047315 # Seed for reproducibility
-    output_dir: "results"
+    output_dir: "results_test22"
     use_amp: False
   # === DATASET CONFIGURATION ===
   dataset:
     data_path: "data"
-    dataset_name: "veri_776" # veri_776 / veri_wild / vehicle_id
-    dataset_size: "small"
+    dataset_name: "veri_wild" # veri_776 / veri_wild / vehicle_id / vru
+    dataset_size: "small" # small / medium / large
     sampler_type: "" # random / balanced / "" (which is: None)
     num_instances: 6 # Only to be adjusted if sampler_type is either "random" or "balanced"
 
@@ -36,7 +36,7 @@ reid:
     jitter_saturation: 0.0
     jitter_hue: 0.0
     color_augmentation: True
-    padding: 0
+    padding: 10
     normalize_mean: null # [0.485, 0.456, 0.406]
     normalize_std: null # [0.229, 0.224, 0.225]
     random_erasing_prob: 0.5
@@ -58,24 +58,22 @@ reid:
   # === TRAINING CONFIGURATION ===
   training:
     epochs: 160
-    batch_size: 24
+    batch_size: 36
     num_workers: 0
-    output_dir: "results"
-    use_amp: False
     # ===> Optimizer configuration
-    optimizer: "sgd" # adam / sgd
-    learning_rate: 1.0e-3
+    optimizer: "adam" # adam / sgd
+    learning_rate: 1.5e-4
     bias_lr_factor: 2
     weight_decay: 0.0005
     weight_decay_bias: 0.0001
     # ===> Scheduler configuration (WarmupDecayLR or MultiStepLR)
-    use_warmup: False
-    steps: [20, 40, 60, 100, 120]
-    gamma: 0.25
+    use_warmup: True
+    steps: [40, 75, 105, 135]
+    gamma: 0.1
     warmup_epochs: 10
-    decay_method: "linear" # "linear" / "smooth" / "cosine"
-    cosine_power: 0.45 # Only to be adjusted if decay_method is "cosine"
-    min_lr: 1.0e-6
+    decay_method: "cosine" # "linear" / "smooth" / "cosine"
+    cosine_power: 1.00 # Only to be adjusted if decay_method is "cosine"
+    min_lr: 3.5e-5
     # ===> Logging configuration
     log_interval: 100
     # ===> Loading checkpoint
@@ -83,7 +81,7 @@ reid:
 
   # === VALIDATION CONFIGURATION ===
   validation:
-    batch_size: 100
+    batch_size: 16
     val_interval: 1
     re_ranking: True
     visualize_ranks: False
@@ -91,6 +89,5 @@ reid:
   # === TEST CONFIGURATION ===
   test:
     testing: False # Always set to False (except in config_test.yml)
-    normalize_embeddings: False
     run_reid_metrics: True
     model_val_path: ""

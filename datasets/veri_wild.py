@@ -8,7 +8,7 @@ class VeriWild():
         self.dataset_name = 'veri_wild'
         self.data_path = os.path.join(data_path, 'VeRi-Wild')
         self.dataset_sizes = {'small': 3000, 'medium': 5000, 'large': 10000} # Number of test images - 3000 (Small), 5000 (Medium), 10000 (Large)
-        self.num_test = self.dataset_sizes[dataset_size]
+        self.test_size = self.dataset_sizes[dataset_size]
 
         # Vehicle Infos
         self.vehicle_infos = self.get_vehicle_infos(os.path.join(self.data_path, 'train_test_split', 'vehicle_info.txt'))
@@ -18,8 +18,8 @@ class VeriWild():
 
         # Train, Test and Query
         self.train = self.get_list(os.path.join(self.data_path, 'train_test_split', 'train_list_start0.txt'))
-        self.gallery = self.get_list(os.path.join(self.data_path, 'train_test_split', f'test_{self.num_test}_id.txt'))
-        self.query = self.get_list(os.path.join(self.data_path, 'train_test_split', f'test_{self.num_test}_id_query.txt'))
+        self.gallery = self.get_list(os.path.join(self.data_path, 'train_test_split', f'test_{self.test_size}_id.txt'))
+        self.query = self.get_list(os.path.join(self.data_path, 'train_test_split', f'test_{self.test_size}_id_query.txt'))
 
         # Relabel the train set only while keeping the original IDs for the query and gallery sets
         self.train = self.relabel_ids(self.train)
@@ -46,7 +46,7 @@ class VeriWild():
                 if name == 'featureMatrix.pkl':
                     s = name[0:13]
                 else:
-                    s = name[0:3]
+                    s = name.split('.')[0]
                 self.gms[s] = pickle.load(f)
                 f.close
 
@@ -58,12 +58,11 @@ class VeriWild():
             split_dir = os.path.join(self.data_path, 'splits')
             if not os.path.exists(split_dir):
                 print("Splits not found. Creating splits for RPTM training...")
-                src_root = os.path.join(self.data_path, 'images')
-                for i in os.listdir(src_root):
-                    folder_name = i.split('_', 2)[0][1:]
-                    if not os.path.exists(os.path.join(split_dir, folder_name)):
-                        os.makedirs(os.path.join(split_dir, folder_name))
-                    shutil.copyfile(os.path.join(src_root, i), os.path.join(split_dir, folder_name, i))
+                for path, folder, car_id, _, _, _, _, _ in self.train:
+                    split_dir = os.path.join(self.data_path, 'splits', folder)
+                    if not os.path.exists(split_dir):
+                        os.makedirs(split_dir)
+                    shutil.copyfile(path, os.path.join(split_dir, path.split(os.path.sep)[-1]))
 
     def relabel_ids(self, dataset):
         all_pids = {}
@@ -74,7 +73,21 @@ class VeriWild():
             if vehicle_id not in all_pids:
                 all_pids[vehicle_id] = len(all_pids)
 
-            new_id = all_pids[vehicle_id]
+            new_id = all_pids[vehicle_id] + 1
+            
+            # Relabel the folder name with the new_id
+            folder = str(new_id)
+            if (len(folder) == 1):
+                folder = '0000' + folder
+            elif (len(folder) == 2):
+                folder = '000' + folder
+            elif (len(folder) == 3):
+                folder = '00' + folder
+            elif (len(folder) == 4):
+                folder = '0' + folder
+            else:
+                pass            
+            
             relabeled_dataset.append((img_path, folder, new_id, camera_id, model_id, color_id, type_id, timestamp))
         return relabeled_dataset
 
@@ -143,15 +156,15 @@ class VeriWild():
         # Iterate through each Item element
         for line in lines:
             # Retrieve the row from self.vehicle_infos using the vehicle ID and the dictionary using the vehicle_img
-            vehicle_id = int(line[0].split('/')[0])
-            vehicle_img = int(line[0].split('/')[1].split('.')[0])
-            vehicle_info = self.vehicle_infos[vehicle_id]
+            vehicle_id = line[0].split('/')[0]
+            vehicle_img = line[0].split('/')[1].split('.')[0]
+            vehicle_info = self.vehicle_infos[int(vehicle_id)]
 
             # Extract the details
             try:
-                result = next(row for row in vehicle_info if row['vehicle_img'] == vehicle_img)
+                result = next(row for row in vehicle_info if row['vehicle_img'] == int(vehicle_img))
             except StopIteration:
-                print(f"No matching row found for vehicle_img {vehicle_img}")
+                print(f"No matching row found for vehicle_img {int(vehicle_img)}")
 
             # Create the folder name, starting from the car ID
             folder = str(result['vehicle_ID'])
@@ -167,7 +180,7 @@ class VeriWild():
                 pass
 
             # (img_path, folder, car_id, cam_id, model_id, color_id, type_id, timestamp)
-            dataset.append((os.path.join(self.img_dir, line[0]), # img_path
+            dataset.append((os.path.join(self.img_dir, folder, vehicle_img + '.jpg'), # img_path
                             folder, # Folder
                             result['vehicle_ID'],
                             result['camera_ID'],

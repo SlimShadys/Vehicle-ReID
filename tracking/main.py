@@ -7,11 +7,12 @@ from ultralytics import YOLO
 
 # Parameters from config.yml file
 with open('tracking/config.yml', 'r') as f:
-    config = yaml.load(f, yaml.FullLoader)['yolov8']
+    config = yaml.load(f, yaml.FullLoader)['yolo']
 
 # Visualization Parameters
 DISP_INFOS = config['main']['disp_infos']
 SAVE_VIDEO = config['main']['save_video']
+SAVE_BOUNDING_BOXES = config['main']['save_bounding_boxes']
 input_path = config['main']['video_path']
 output_path = config['main']['output_path']
 output_name = config['main']['output_name']
@@ -47,9 +48,32 @@ while cap.isOpened():
 
     # Run YOLOv8 tracking on the frame, persisting tracks between frames
     results = model.track(img, classes=list(tracked_classes.keys()), conf=conf_thresh, persist=True)
-    
-    # for r in results:
-    #     print(r.boxes.id)  # print tracking IDs
+
+    # Extract bounding boxes, classes, names, and confidences
+    boxes = results[0].boxes.xyxy.tolist()
+    classes = results[0].boxes.cls.tolist()
+    ids = results[0].boxes.id.tolist()
+    names = results[0].names
+    confidences = results[0].boxes.conf.tolist()
+
+    # apply non-maxima suppression to suppress weak, overlapping bounding boxes
+    # idxs = cv2.dnn.NMSBoxes(boxes, confidences, score_threshold=0.5, nms_threshold=0.3)
+
+    # Iterate through the results
+    for box, cls, id, conf in zip(boxes, classes, ids, confidences):
+        x1, y1, x2, y2 = map(int, box)  # Convert to integers
+        confidence = conf
+        detected_class = cls
+        name = names[int(cls)]
+
+        # Crop the bounding box from the original image
+        crop = img[y1:y2, x1:x2]
+
+        # Generate a unique filename for the cropped image
+        filename = os.path.join(output_path, f"{name}_ID-{id}_{confidence:.2f}.jpg")
+
+        # Save the cropped image
+        if SAVE_BOUNDING_BOXES: cv2.imwrite(filename, crop)
 
     # Visualize the results on the frame
     annotated_frame = results[0].plot()

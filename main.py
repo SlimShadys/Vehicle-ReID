@@ -105,12 +105,13 @@ def main(config, config_file, seed):
         'veri_776': 576,
         'veri_wild': 30671,
         'vehicle_id': 13164,
+        'vru': 7086,
     }
 
     # Create Dataset and DataLoaders
     print(f"Building Dataset:")
     print(f"- Name: {dataset_name}")
-    if dataset_name in ['veri_wild', 'vehicle_id']:
+    if dataset_name in ['veri_wild', 'vehicle_id', 'vru']:
         print(f"- Size: {dataset_size}")
     print("--------------------")
 
@@ -118,7 +119,7 @@ def main(config, config_file, seed):
                                      dataset_size=dataset_size, use_rptm=use_rptm,
                                      augmentation_configs=augmentation_configs)
     train_dataset = dataset_builder.train_set       # Get the Train dataset
-    val_dataset = dataset_builder.validation_set   # Get the Test dataset
+    val_dataset = dataset_builder.validation_set    # Get the Test dataset
     print(f"Dataset successfully built!")
     print(f"Unique classes: {dataset_builder.dataset.get_unique_car_ids()}")
 

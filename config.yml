@@ -11,8 +11,8 @@ reid:
   # === DATASET CONFIGURATION ===
   dataset:
     data_path: "data"
-    dataset_name: "vehicle_id" # veri_776 / veri_wild / vehicle_id
-    dataset_size: "small"
+    dataset_name: "vru" # veri_776 / veri_wild / vehicle_id / vru
+    dataset_size: "small" # small / medium / large
     sampler_type: "random" # random / balanced / "" (which is: None)
     num_instances: 6 # Only to be adjusted if sampler_type is either "random" or "balanced"
 

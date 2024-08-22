@@ -1,6 +1,6 @@
 import os
 import random
-from typing import Dict, Optional, Set, Tuple, Type, Union
+from typing import Dict, Optional, Type, Union
 
 import numpy as np
 import numpy.ma as ma
@@ -9,8 +9,9 @@ from datasets.transforms import Transformations
 from datasets.vehicle_id import VehicleID
 from datasets.veri_776 import Veri776
 from datasets.veri_wild import VeriWild
+from datasets.vru import VRU
 from loss import LossBuilder
-from misc.utils import (euclidean_dist, eval_func, eval_func_vehicle_id, load_model, re_ranking,
+from misc.utils import (euclidean_dist, eval_func, load_model, re_ranking,
                         read_image, save_model, search, strint,
                         visualize_ranked_results)
 from torch.utils.data import DataLoader
@@ -24,7 +25,7 @@ class Trainer:
         dataloaders: Dict[str, Union[
                                         Optional[DataLoader],
                                         Dict[str, Union[DataLoader, int]], 
-                                        Type[Union[VehicleID, Veri776, VeriWild]], 
+                                        Type[Union[VehicleID, Veri776, VeriWild, VRU]], 
                                         Transformations
                                     ]
                         ],
@@ -61,7 +62,8 @@ class Trainer:
 
             # Loss configs
             self.use_rptm, self.rptm_type = self.loss_configs['use_rptm']
-            self.max_negative_labels = self.dataset.max_negative_labels
+            if self.use_rptm:
+                self.max_negative_labels = self.dataset.max_negative_labels
 
             # Optimizer configurations
             self.weight_decay = self.train_configs['weight_decay']
@@ -359,27 +361,16 @@ class Trainer:
         distmat = euclidean_dist(query_feat, gallery_feat, self.use_amp, train=False)
 
         CMC_RANKS = [1, 3, 5, 10]
-        if (self.dataset.dataset_name == 'vehicle_id'):
-            cmc, mAP, _ = eval_func_vehicle_id(distmat.numpy(), query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(),
-                        query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(),
-                        max_rank=max(CMC_RANKS), re_rank=False)
-        else:
-            cmc, mAP, _ = eval_func(distmat.numpy(), query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(),
-                        query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(),
-                        max_rank=max(CMC_RANKS), re_rank=False)
-            
+        cmc, mAP, _ = eval_func(distmat.numpy(), query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(),
+            query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(),
+            max_rank=max(CMC_RANKS), dataset_name=self.dataset.dataset_name, re_rank=False)
+                    
         if (self.re_ranking):
             distmat_re = re_ranking(query_feat, gallery_feat, k1=80, k2=15, lambda_value=0.2)
 
-            # We have to use the evaluate_vid function only for Vehicle ID dataset
-            if self.dataset.dataset_name == 'vehicle_id':
-                cmc_re, mAP_re, _ = eval_func_vehicle_id(distmat_re, query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(),
-                                              query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(),
-                                              max_rank=max(CMC_RANKS), re_rank=True)
-            else:
-                cmc_re, mAP_re, _ = eval_func(distmat_re, query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(),
-                                              query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(),
-                                              max_rank=max(CMC_RANKS), re_rank=True)
+            cmc_re, mAP_re, _ = eval_func(distmat_re, query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(),
+                                            query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(),
+                                            max_rank=max(CMC_RANKS), dataset_name=self.dataset.dataset_name, re_rank=True)
 
         # Visualize the ranked results if the flag is set to True
         if (self.visualize_ranks):

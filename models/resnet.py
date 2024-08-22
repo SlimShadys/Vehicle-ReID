@@ -233,7 +233,10 @@ class ResNet_IBN(nn.Module):
             return features
 
     def load_param(self, model_path):
-        param_dict = torch.load(model_path)
+        try:
+            param_dict = torch.load(model_path)
+        except:
+            param_dict = torch.load(model_path, map_location='cuda:0')
         for i in param_dict['model']:
             if 'fc' in i: continue
             self.state_dict()[i].copy_(param_dict['model'][i])

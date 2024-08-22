@@ -7,8 +7,8 @@ reid:
   # === DATASET CONFIGURATION ===
   dataset:
     data_path: "data"
-    dataset_name: "veri_776" # veri_776 / veri_wild / vehicle_id
-    dataset_size: "small"
+    dataset_name: "veri_776" # veri_776 / veri_wild / vehicle_id / vru
+    dataset_size: "small" # small / medium / large
 
   # === MODEL CONFIGURATION ===
   model:
@@ -45,5 +45,9 @@ reid:
   test:
     testing: True # Always set to True (in config_test.yml) to avoid training the model etc.
     normalize_embeddings: False
-    run_reid_metrics: True
+    run_reid_metrics: False
+    path_img_1: "data/test/honda_f.jpg"
+    path_img_2: "data/test/honda_f_2.jpg"
+    stack_images: True # Stack all the images to create a NxN matrix of similarity scores. Only available if run_reid_metrics is False
+    similarity: "cosine" # "euclidean" / "cosine"
     model_val_path: "results/Test-14/model_ep-158_loss-0.0275.pth"

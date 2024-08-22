@@ -11,6 +11,7 @@ from datasets.transforms import Transformations
 from datasets.vehicle_id import VehicleID
 from datasets.veri_776 import Veri776
 from datasets.veri_wild import VeriWild
+from datasets.vru import VRU
 from misc.utils import read_image, get_imagedata_info
 from torch.utils.data import Dataset
 from torch.utils.data.sampler import Sampler
@@ -28,13 +29,15 @@ class DatasetBuilder():
         self.use_rptm = use_rptm # Whether to use RPTM Training
 
         # For veri_776 dataset, there is not a specific dataset type
-        # For veri_wild and vehicle-id, there are three types: small, medium, large
+        # For veri_wild, vehicle_id, and vru there are three types: small, medium, large
         if self.dataset_name == 'veri_776':
             self.dataset = Veri776(self.data_path, self.use_rptm)
         elif self.dataset_name == 'veri_wild':
             self.dataset = VeriWild(self.data_path, self.dataset_size, self.use_rptm)
         elif self.dataset_name == 'vehicle_id':
             self.dataset = VehicleID(self.data_path, self.dataset_size, self.use_rptm)
+        elif self.dataset_name == 'vru':
+            self.dataset = VRU(self.data_path, self.dataset_size, split_id=0, use_rptm=self.use_rptm)
         else:
             raise ValueError(f"Unknown dataset: {self.dataset_name}")
 
@@ -110,6 +113,10 @@ class ImageDataset(Dataset):
                 index = 0 if self.data[idx][0] not in self.index else self.index[self.data[idx][0]][1]
             elif self.dataset_name == 'vehicle_id':
                 index = self.index[self.data[idx][0]][1]
+            elif self.dataset_name == 'veri_wild':
+                index = 0 if self.data[idx][0].split(os.sep)[-1] not in self.index else self.index[self.data[idx][0].split(os.sep)[-1]][1]
+            elif self.dataset_name == 'vru':
+                raise NotImplementedError("RPTM Training is not fully implemented yet for VRU dataset.")
             else:
                 index = 0
         else:
