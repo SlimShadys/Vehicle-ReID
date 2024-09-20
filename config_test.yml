@@ -18,7 +18,15 @@ reid:
     use_gem: False
     use_stride: True
     use_bottleneck: True
-    
+    # === COLOR CLASSIFIER CONFIGURATION ===
+    color_classifier:
+      topK: 3
+      model_file: "car-color-classifier/models/model-weights-spectrico-car-colors-recognition-mobilenet_v3-224x224-180420.pb"
+      label_file: "car-color-classifier/labels.txt" # color_classifier
+      input_layer: "input_1"
+      output_layer: "Predictions/Softmax/Softmax"
+      input_size: [224, 224]
+
   # === AUGMENTATION CONFIGURATION ===
   augmentation:
     height: 320
@@ -46,6 +54,7 @@ reid:
     testing: True # Always set to True (in config_test.yml) to avoid training the model etc.
     normalize_embeddings: False
     run_reid_metrics: False
+    run_color_metrics: True
     path_img_1: "data/test/honda_f.jpg"
     path_img_2: "data/test/honda_f_2.jpg"
     stack_images: True # Stack all the images to create a NxN matrix of similarity scores. Only available if run_reid_metrics is False

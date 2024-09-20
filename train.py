@@ -18,23 +18,28 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from training.scheduler import WarmupDecayLR
 
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+import matplotlib.pyplot as plt
+
 class Trainer:
     def __init__(
         self,
-        model: torch.nn.Module,
-        dataloaders: Dict[str, Union[
-                                        Optional[DataLoader],
-                                        Dict[str, Union[DataLoader, int]], 
-                                        Type[Union[VehicleID, Veri776, VeriWild, VRU]], 
-                                        Transformations
-                                    ]
-                        ],
+        model: Union[torch.nn.Module, torch.nn.Module],
+        # dataloaders: Dict[str, Union[
+        #                                 Optional[DataLoader],
+        #                                 Dict[str, Union[DataLoader, int]], 
+        #                                 Type[Union[VehicleID, Veri776, VeriWild, VRU]], 
+        #                                 Transformations
+        #                             ]
+        #                 ],
+        dataloaders,
         val_interval: int,
         loss_fn: LossBuilder,
         configs,
         device: str = 'cuda'
     ):
-        self.model = model
+        self.model, self.car_classifier = model
         self.device = device
         self.train_loader = dataloaders['train']
         self.val_loader, self.num_query = dataloaders['val']
@@ -176,7 +181,7 @@ class Trainer:
             opt_lr = self.scheduler.optimizer.param_groups[0]['lr']
 
             if (epoch > 0 and epoch % self.val_interval == 0):
-                self.validate(epoch, save_results=True)
+                self.validate(epoch, save_results=True, metrics=['reid'])
 
             print(f"Epoch {epoch}/{self.epochs} | LR: {opt_lr:.2e}\n"
                   f"\t - ID Loss: {np.mean(self.running_id_loss):.4f}\n"
@@ -327,86 +332,146 @@ class Trainer:
                       f"Accuracy: {np.mean(self.acc_list):.4f} | "
                       f"LR: {self.scheduler.get_lr()[0]:.2e}")
 
-    def validate(self, epoch: Optional[int] = 0, save_results=False):
+    def validate_color(self, img, color_id: torch.Tensor):
+        # Run inference on the color model | self.color_model.predict(image)
+        color_predictions = self.car_classifier.color_classifier.predict(img)
+
+        # We need to decode the color predictions, which are in a format:
+        # [{'color': 'black', 'prob': '0.9999'}, ...]
+        # We need to convert this to a tensor of shape (batch_size, num_classes)
+        # where the color will be converted from a String ('black') to an Int () corresponding
+        # to the Veri-776 colors
+        color_predictions_tensor = torch.zeros((img.size(0), 1), dtype=torch.float32, device=self.device)
+        
+        predicted_color_indices = []
+
+        # Iterate through the color predictions
+        for i, color in enumerate(color_predictions):
+            color_prediction = color[0]['color'].lower()
+            # We need to convert this color prediction back to the index of the color (list_color)
+            predicted_index = self.dataset.get_color_index(color_prediction)
+            predicted_color_indices.append(predicted_index)
+            color_predictions_tensor[i][0] = predicted_index
+        
+        predicted_color_indices = np.array(predicted_color_indices)
+        actual_color_indices = color_id.detach().cpu().numpy()  # Assuming color_id is a tensor
+        
+        # Calculate the accuracy between the tensor of predictions and the color_id
+        return (torch.max(color_predictions_tensor, 1)[0] == color_id).float().mean(), predicted_color_indices, actual_color_indices
+
+    def validate(self, epoch: Optional[int] = 0, save_results=False, metrics=None):
         self.model.eval()
         num_query = self.num_query
         features, car_ids, cam_ids, paths = [], [], [], []
+        color_accuracies, predictions_colors, ground_truth_colors = [], [], []
 
         with torch.no_grad():
             for i, (img_path, img, folders, indices, car_id, cam_id, model_id, color_id, type_id, timestamp) in tqdm(enumerate(self.val_loader), total=len(self.val_loader), desc="Running Validation"):
-                img, car_id, cam_id = img.to(self.device), car_id.to(self.device), cam_id.to(self.device)
+                img, car_id, cam_id, color_id = img.to(self.device), car_id.to(self.device), cam_id.to(self.device), color_id.to(self.device)
 
-                with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=self.use_amp):
-                    feat = self.model(img, training=False).detach().cpu()
+                if 'reid' in metrics:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=self.use_amp):
+                        feat = self.model(img, training=False).detach().cpu()
+                        features.append(feat)
 
-                features.append(feat)
+                if 'color' in metrics:
+                    # Run the color model here
+                    color_accuracy, pred_colors, gt_colors = self.validate_color(img, color_id)
+                    color_accuracies.append(color_accuracy)
+                    predictions_colors.append(pred_colors)
+                    ground_truth_colors.append(gt_colors)
+                
+                # Append the car_id, cam_id, and paths generally without any condition
                 car_ids.append(car_id)
                 cam_ids.append(cam_id)
                 paths.extend(img_path)
 
-        features = torch.cat(features, dim=0)
-        car_ids = torch.cat(car_ids, dim=0)
-        cam_ids = torch.cat(cam_ids, dim=0)
+        if 'reid' in metrics:
+            features = torch.cat(features, dim=0)
+            car_ids = torch.cat(car_ids, dim=0)
+            cam_ids = torch.cat(cam_ids, dim=0)
 
-        query_feat = features[:num_query]
-        query_pid = car_ids[:num_query]
-        query_camid = cam_ids[:num_query]
-        # query_path = np.array(paths[:num_query])
+            query_feat = features[:num_query]
+            query_pid = car_ids[:num_query]
+            query_camid = cam_ids[:num_query]
+            # query_path = np.array(paths[:num_query])
 
-        gallery_feat = features[num_query:]
-        gallery_pid = car_ids[num_query:]
-        gallery_camid = cam_ids[num_query:]
-        # gallery_path = np.array(paths[num_query:])
+            gallery_feat = features[num_query:]
+            gallery_pid = car_ids[num_query:]
+            gallery_camid = cam_ids[num_query:]
+            # gallery_path = np.array(paths[num_query:])
 
-        distmat = euclidean_dist(query_feat, gallery_feat, self.use_amp, train=False)
+        if 'color' in metrics:
+            color_accuracies = torch.tensor(color_accuracies)
+            print(f"Color Accuracy: {torch.mean(color_accuracies).item():.4f}%")
 
-        CMC_RANKS = [1, 3, 5, 10]
-        cmc, mAP, _ = eval_func(distmat.numpy(), query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(),
-            query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(),
-            max_rank=max(CMC_RANKS), dataset_name=self.dataset.dataset_name, re_rank=False)
-                    
-        if (self.re_ranking):
-            distmat_re = re_ranking(query_feat, gallery_feat, k1=80, k2=15, lambda_value=0.2)
+            # Before returning the accuracy, we would like to have some sort of confusion matrix
+            # where we can see the predictions and the actual color_id
+            # In this way, we can see if the model is confusing the colors with very slightly different colors
+            predictions_colors = np.concatenate([arr for arr in predictions_colors]).tolist()
+            ground_truth_colors = np.concatenate([arr for arr in ground_truth_colors]).tolist()
+            conf_matrix = confusion_matrix(ground_truth_colors, predictions_colors, labels=list(self.dataset.color_dict.keys()))
 
-            cmc_re, mAP_re, _ = eval_func(distmat_re, query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(),
-                                            query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(),
-                                            max_rank=max(CMC_RANKS), dataset_name=self.dataset.dataset_name, re_rank=True)
+            # Plot confusion matrix
+            plt.figure(figsize=(10, 8))
+            sns.heatmap(conf_matrix, annot=True, fmt="d", cmap="Blues",
+                        xticklabels=list(self.dataset.color_dict.values()),
+                        yticklabels=list(self.dataset.color_dict.values()))
+            plt.xlabel('Predicted Color')
+            plt.ylabel('True Color')
+            plt.title('Confusion Matrix of Color Predictions')
+            plt.show()
 
-        # Visualize the ranked results if the flag is set to True
-        if (self.visualize_ranks):
+        if 'reid' in metrics:
+            distmat = euclidean_dist(query_feat, gallery_feat, self.use_amp, train=False)
+
+            CMC_RANKS = [1, 3, 5, 10]
+            cmc, mAP, _ = eval_func(distmat.numpy(), query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(),
+                query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(),
+                max_rank=max(CMC_RANKS), dataset_name=self.dataset.dataset_name, re_rank=False)
+                        
             if (self.re_ranking):
-                visualize_ranked_results(distmat=distmat_re, dataset=(self.dataset.query, self.dataset.gallery), topk=max(CMC_RANKS))
-            else:
-                visualize_ranked_results(distmat=distmat, dataset=(self.dataset.query, self.dataset.gallery), topk=max(CMC_RANKS))
+                distmat_re = re_ranking(query_feat, gallery_feat, k1=80, k2=15, lambda_value=0.2)
 
-        # Output the results to the console, depending on the re-ranking
-        print(f"Epoch {epoch}\n")
-        if self.re_ranking:
-            for r in CMC_RANKS:
-                print('\t - CMC Rank-{}: {:.2%} ({:.2%})'.format(r, cmc[r-1], cmc_re[r-1]))
-            print('\t - mAP: {:.2%} ({:.2%})'.format(mAP, mAP_re))
-        else:
-            for r in CMC_RANKS:
-                print('\t - CMC Rank-{}: {:.2%}'.format(r, cmc[r-1]))
-            print('\t - mAP: {:.2%}'.format(mAP))
-        print('\t ----------------------')
+                cmc_re, mAP_re, _ = eval_func(distmat_re, query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(),
+                                                query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(),
+                                                max_rank=max(CMC_RANKS), dataset_name=self.dataset.dataset_name, re_rank=True)
 
-        if (save_results):
-            # Append the results to a file
-            with open(os.path.join(self.output_dir, 'results-val.txt'), 'a') as f:
+            # Visualize the ranked results if the flag is set to True
+            if (self.visualize_ranks):
                 if (self.re_ranking):
-                    f.write(f"Epoch {epoch}\n"
-                            f"\t - CMC Rank-1: {cmc[CMC_RANKS[0]-1]:.2%} ({cmc_re[CMC_RANKS[0]-1]:.2%})\n"
-                            f"\t - CMC Rank-3: {cmc[CMC_RANKS[1]-1]:.2%} ({cmc_re[CMC_RANKS[1]-1]:.2%})\n"
-                            f"\t - CMC Rank-5: {cmc[CMC_RANKS[2]-1]:.2%} ({cmc_re[CMC_RANKS[2]-1]:.2%})\n"
-                            f"\t - CMC Rank-10: {cmc[CMC_RANKS[3]-1]:.2%} ({cmc_re[CMC_RANKS[3]-1]:.2%})\n"
-                            f"\t - mAP: {mAP:.2%} ({mAP_re:.2%})\n"
-                            f"\t ----------------------\n")
+                    visualize_ranked_results(distmat=distmat_re, dataset=(self.dataset.query, self.dataset.gallery), topk=max(CMC_RANKS))
                 else:
-                    f.write(f"Epoch {epoch}\n"
-                            f"\t - CMC Rank-1: {cmc[CMC_RANKS[0]-1]:.2%}\n"
-                            f"\t - CMC Rank-3: {cmc[CMC_RANKS[1]-1]:.2%}\n"
-                            f"\t - CMC Rank-5: {cmc[CMC_RANKS[2]-1]:.2%}\n"
-                            f"\t - CMC Rank-10: {cmc[CMC_RANKS[3]-1]:.2%}\n"
-                            f"\t - mAP: {mAP:.2%}\n"
-                            f"\t ----------------------\n")
+                    visualize_ranked_results(distmat=distmat, dataset=(self.dataset.query, self.dataset.gallery), topk=max(CMC_RANKS))
+
+            # Output the results to the console, depending on the re-ranking
+            print(f"Epoch {epoch}\n")
+            if self.re_ranking:
+                for r in CMC_RANKS:
+                    print('\t - CMC Rank-{}: {:.2%} ({:.2%})'.format(r, cmc[r-1], cmc_re[r-1]))
+                print('\t - mAP: {:.2%} ({:.2%})'.format(mAP, mAP_re))
+            else:
+                for r in CMC_RANKS:
+                    print('\t - CMC Rank-{}: {:.2%}'.format(r, cmc[r-1]))
+                print('\t - mAP: {:.2%}'.format(mAP))
+            print('\t ----------------------')
+
+            if (save_results):
+                # Append the results to a file
+                with open(os.path.join(self.output_dir, 'results-val.txt'), 'a') as f:
+                    if (self.re_ranking):
+                        f.write(f"Epoch {epoch}\n"
+                                f"\t - CMC Rank-1: {cmc[CMC_RANKS[0]-1]:.2%} ({cmc_re[CMC_RANKS[0]-1]:.2%})\n"
+                                f"\t - CMC Rank-3: {cmc[CMC_RANKS[1]-1]:.2%} ({cmc_re[CMC_RANKS[1]-1]:.2%})\n"
+                                f"\t - CMC Rank-5: {cmc[CMC_RANKS[2]-1]:.2%} ({cmc_re[CMC_RANKS[2]-1]:.2%})\n"
+                                f"\t - CMC Rank-10: {cmc[CMC_RANKS[3]-1]:.2%} ({cmc_re[CMC_RANKS[3]-1]:.2%})\n"
+                                f"\t - mAP: {mAP:.2%} ({mAP_re:.2%})\n"
+                                f"\t ----------------------\n")
+                    else:
+                        f.write(f"Epoch {epoch}\n"
+                                f"\t - CMC Rank-1: {cmc[CMC_RANKS[0]-1]:.2%}\n"
+                                f"\t - CMC Rank-3: {cmc[CMC_RANKS[1]-1]:.2%}\n"
+                                f"\t - CMC Rank-5: {cmc[CMC_RANKS[2]-1]:.2%}\n"
+                                f"\t - CMC Rank-10: {cmc[CMC_RANKS[3]-1]:.2%}\n"
+                                f"\t - mAP: {mAP:.2%}\n"
+                                f"\t ----------------------\n")

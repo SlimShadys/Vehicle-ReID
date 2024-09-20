@@ -1,15 +1,18 @@
 yolo: 
  # -- GENERAL -- #
  main:
+  device: 'cuda'
+  seed: 2047315
   video_path: 'tracking\video\video_traffic_2.mp4'
   output_path: 'tracking\output\'
-  output_name: 'output_traffic.mp4'
+  output_name: 'output_traffic_2.mp4'
   disp_infos: True
   save_video: False
   save_bounding_boxes: False
 
  # -- MODEL -- #
  model:
+  # YOLO
   yolo_model_name: 'yolov10m'
   tracked_class: {1: 'bicycle', 2: 'car', 3: 'motorcycle', 5: 'bus', 6: 'train', 7: 'truck'}
   downscale_factor: 4

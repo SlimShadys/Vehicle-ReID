@@ -1,6 +1,7 @@
 import torch.nn as nn
 from models.layers import Bottleneck_IBN
 from models.resnet import ResNet, ResNet_IBN
+from models.color_model import CarClassifier
 
 resnet_urls = {
     'resnet18': "https://download.pytorch.org/models/resnet18-f37072fd.pth",
@@ -25,6 +26,7 @@ class ModelBuilder:
         self.model_builders = {
             'resnet': self.build_resnet,
             'vit': self.build_vit,
+            'color_model': self.build_color_model
         }
 
         # Supported ResNet models
@@ -74,8 +76,15 @@ class ModelBuilder:
     def build_vit(self):
         raise NotImplementedError("ViT model is not implemented yet")
 
+    def build_color_model(self):
+        return CarClassifier(configs=self.model_configs['color_classifier'])
+
     def move_to(self, device):
-        self.model = self.model.to(device)
+        # No Torch CUDA support for Color Model (it's a TF model)
+        if self.model_name == 'color_model':
+            return self.model
+        else:
+            self.model = self.model.to(device)
         return self.model
 
     def get_number_trainable_parameters(self):

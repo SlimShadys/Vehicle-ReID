@@ -1,8 +1,24 @@
 # Vehicle Re-Identification
 
 ## Install proper libraries
-In order to install the proper libraries, a `requirements.txt` file, is present.<br>
-Simply run `pip install -r requirements.txt`.
+In order to install the proper libraries, please first install TensorFlow and PyTorch. The following guidelines are made for Windows 10/11. Adjust accordingly.
+
+### TensorFlow
+
+```bat
+conda install -c conda-forge cudatoolkit=11.2 cudnn=8.1.0
+pip install "tensorflow<2.11"
+```
+
+### PyTorch
+```bat
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+```
+
+Once everything has been installed, simply run the `requirements.txt` file with:
+```bat
+pip install -r requirements.txt
+```
 
 ## Configuration
 The project has a dedicated `config.yml` file (along with `config_rptm.yml` for [RPTM Training](https://openaccess.thecvf.com/content/WACV2023/papers/Ghosh_Relation_Preserving_Triplet_Mining_for_Stabilising_the_Triplet_Loss_In_WACV_2023_paper.pdf)), including various configurations for:

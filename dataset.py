@@ -132,17 +132,18 @@ class ImageDataset(Dataset):
         imgs = torch.stack(imgs, dim=0)
         car_ids = torch.tensor(car_ids, dtype=torch.int64)  # [batch_size]
         cam_ids = torch.tensor(cam_ids, dtype=torch.int64)
+        color_ids = torch.tensor(color_ids, dtype=torch.int64)
 
         return img_paths, imgs, folders, indices, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps
 
     def val_collate_fn(self, batch) -> tuple[list[str], torch.Tensor, torch.Tensor, torch.Tensor, int, int, int, str]:
-        img_paths, imgs, folders, indices, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps = zip(
-            *batch)
+        img_paths, imgs, folders, indices, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps = zip(*batch)
 
         # Transform Car IDs and Images to Tensors
         imgs = torch.stack(imgs, dim=0)                     # [batch_size, 3, height, width]
         car_ids = torch.tensor(car_ids, dtype=torch.int64)  # [batch_size]
         cam_ids = torch.tensor(cam_ids, dtype=torch.int64)
+        color_ids = torch.tensor(color_ids, dtype=torch.int64)
 
         return img_paths, imgs, folders, indices, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps
 

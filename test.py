@@ -1,9 +1,10 @@
 import os
 import random
 import sys
+
 import matplotlib.pyplot as plt
-import seaborn as sns
 import numpy as np
+import seaborn as sns
 import torch
 import yaml
 from dataset import DatasetBuilder
@@ -160,6 +161,7 @@ def main(config, seed):
 
     # Test parameters
     run_reid_metrics = test_configs['run_reid_metrics']
+    run_color_metrics = test_configs['run_color_metrics']
     stack_images = test_configs['stack_images']
     similarity = test_configs['similarity']
     normalize_embeddings = test_configs['normalize_embeddings']
@@ -201,7 +203,7 @@ def main(config, seed):
     model.eval()
     print(model)
 
-    if not run_reid_metrics:
+    if run_reid_metrics == False and run_color_metrics == False:
         # Define the validation transformations
         transforms = Transformations(configs=augmentation_configs)
         val_transform = transforms.get_val_transform()
@@ -215,9 +217,12 @@ def main(config, seed):
             if (similarity == 'cosine'):
                 print(f"Similarity between the 2 images: {distance}")
             else:
-                print(f"Distance between the 2 images: {distance}")
-                
-    else:
+                print(f"Distance between the 2 images: {distance}")      
+    elif run_reid_metrics == True or run_color_metrics == True:
+
+        # Metrics to run
+        metrics = []
+
         # Create Dataset and DataLoaders
         print(f"Building Dataset:")
         print(f"- Name: {dataset_name}")
@@ -237,17 +242,32 @@ def main(config, seed):
                                 collate_fn=val_dataset.val_collate_fn, num_workers=0,
                                 pin_memory=True, drop_last=False)
 
+        if run_color_metrics:
+            print(f"Building color model...")
+            model_builder = ModelBuilder(
+                model_name='color_model',
+                pretrained=pretrained,
+                num_classes=num_classes[dataset_name],
+                model_configs=model_configs
+            )
+            color_model = model_builder.move_to(device)
+        else:
+            color_model = None
+
         # Create the Trainer
         trainer = Trainer(
-            model=model,
+            model=[model, color_model],
             val_interval=0,
             dataloaders={'train': None, 'val': {val_loader, len(dataset_builder.dataset.query)},
                         'dataset': dataset_builder.dataset, 'transform': dataset_builder.transforms},
             loss_fn=None,
             device=device,
             configs=(misc_configs, None, None, None, val_configs, test_configs)
-        )        
-        trainer.validate(save_results=False)
+        )
+        if run_reid_metrics: metrics.append('reid')
+        if run_color_metrics: metrics.append('color')
+        
+        trainer.validate(save_results=False, metrics=metrics)
 
 # Usage: python test.py <path_to_config.yml>
 if __name__ == '__main__':

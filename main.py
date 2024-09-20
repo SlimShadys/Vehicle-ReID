@@ -185,7 +185,7 @@ def main(config, config_file, seed):
 
     # Create the Trainer
     trainer = Trainer(
-        model=model,
+        model=[model, None],
         val_interval=val_interval,
         dataloaders={'train': train_loader, 'val': {val_loader, len(dataset_builder.dataset.query)},
                      'dataset': dataset_builder.dataset, 'transform': dataset_builder.transforms},

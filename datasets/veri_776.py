@@ -13,6 +13,13 @@ class Veri776():
         self.train_labels = self.get_labels(os.path.join(self.data_path, 'train_label.xml'))
         self.test_labels = self.get_labels(os.path.join(self.data_path, 'test_label.xml'))
 
+        # Read color IDs
+        self.color_dict = {}
+        with open(os.path.join(self.data_path, 'list_color.txt'), 'r') as file:
+            for line in file:
+                index, color = line.strip().split(' ', 1)
+                self.color_dict[int(index)] = color.lower()
+
         # Directories
         self.train_dir = os.path.join(self.data_path, 'image_train')
         self.query_dir = os.path.join(self.data_path, 'image_query')
@@ -23,8 +30,9 @@ class Veri776():
 
         # Test (query and gallery)
         self.gallery = self.get_list(self.test_labels, self.gallery_dir)
+
         # No details for the query set
-        self.query = self.get_list(None, self.query_dir)
+        self.query = self.get_list(self.test_labels, self.query_dir)
 
         # Junk index and GT index
         self.indices = self.get_indices('name_query.txt', 'jk_index.txt', 'gt_index.txt')
@@ -131,39 +139,32 @@ class Veri776():
         return labels_dict
 
     def get_list(self, labels, dir_path):
-        if 'train' in dir_path or 'test' in dir_path:
-            add_details = True
-        else:
-            add_details = False
         dataset = []
         img_paths = glob.glob(os.path.join(dir_path, '*.jpg'))
 
         for img_path in img_paths:
-            if (add_details):
-                try:
-                    # Details
-                    car_detail = labels[os.path.basename(img_path)]
-                    # Extract folder value (Needed for RPTM)
-                    folder = (img_path.split(os.path.sep, 4)[-1]).split('_', 1)[0][1:]
-                    car_id = car_detail['vehicle_ID']
-                    cam_id = car_detail['camera_ID']
+            try:
+                # Details
+                car_detail = labels[os.path.basename(img_path)]
+                # Extract folder value (Needed for RPTM)
+                folder = (img_path.split(os.path.sep, 4)[-1]).split('_', 1)[0][1:]
+                car_id = car_detail['vehicle_ID']
+                cam_id = car_detail['camera_ID']
 
-                    # Various checks to ensure the data is correct
-                    if car_id == -1:
-                        continue  # Junk images are just ignored
-                    assert 0 <= car_id <= 1501 # pid == 0 means background
-                    assert 0 <= cam_id <= 19   # Check if the camera ID is within the range
-                    
-                    model_id = car_detail['model_ID']
-                    type_id = car_detail['type_ID']
-                    color_id = car_detail['color_ID']
-                    timestamp = car_detail['timestamp']
-                    details = (img_path, folder, car_id, cam_id, model_id, color_id, type_id, timestamp)
-                except:
-                    # There are 32 images that are not in the XML file,
-                    # So we need to extract the infos manually from the image name
-                    details = self.retrieve_details(img_path)
-            else:
+                # Various checks to ensure the data is correct
+                if car_id == -1:
+                    continue  # Junk images are just ignored
+                assert 0 <= car_id <= 1501 # pid == 0 means background
+                assert 0 <= cam_id <= 19   # Check if the camera ID is within the range
+                
+                model_id = car_detail['model_ID']
+                type_id = car_detail['type_ID']
+                color_id = car_detail['color_ID']
+                timestamp = car_detail['timestamp']
+                details = (img_path, folder, car_id, cam_id, model_id, color_id, type_id, timestamp)
+            except:
+                # There are 32 images that are not in the XML file,
+                # So we need to extract the infos manually from the image name
                 details = self.retrieve_details(img_path)
 
             dataset.append(details)
@@ -219,3 +220,14 @@ class Veri776():
         all_car_ids = {car_id for _, _, car_id, _, _, _, _, _ in self.train}
         # Get the unique car IDs
         return len(all_car_ids)
+    
+    def get_color_index(self, color_pred: str):
+        for index, color in self.color_dict.items():
+            if color == color_pred:
+                return index
+            
+        # If the code reaches this point, it means that the color is not found
+        # Hence, we would like to add it to the list of colors
+        color_index = len(self.color_dict) + 1
+        self.color_dict[color_index] = color_pred
+        return color_index
