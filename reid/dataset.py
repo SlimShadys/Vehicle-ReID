@@ -7,11 +7,11 @@ from typing import List, Optional, Union
 
 import numpy as np
 import torch
-from datasets.transforms import Transformations
-from datasets.vehicle_id import VehicleID
-from datasets.veri_776 import Veri776
-from datasets.veri_wild import VeriWild
-from datasets.vru import VRU
+from reid.datasets.transforms import Transformations
+from reid.datasets.vehicle_id import VehicleID
+from reid.datasets.veri_776 import Veri776
+from reid.datasets.veri_wild import VeriWild
+from reid.datasets.vru import VRU
 from misc.utils import read_image, get_imagedata_info
 from torch.utils.data import Dataset
 from torch.utils.data.sampler import Sampler

@@ -1,17 +1,19 @@
 import os
-import random
-import shutil
 import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import argparse
+import random
 
 import numpy as np
 import torch
-import yaml
-from dataset import (BalancedIdentitySampler, DatasetBuilder,
+from config import _C as cfg_file
+from reid.dataset import (BalancedIdentitySampler, DatasetBuilder,
                      RandomIdentitySampler)
-from loss import LossBuilder
-from model import ModelBuilder
+from reid.loss import LossBuilder
+from reid.model import ModelBuilder
 from torch.utils.data import DataLoader
-from train import Trainer
+from reid.train import Trainer
 
 def set_seed(seed):
     random.seed(seed)
@@ -24,53 +26,53 @@ def set_seed(seed):
     torch.backends.cudnn.benchmark = False
     print("Correctly set the seed to:", seed)
 
-def main(config, config_file, seed):
+def main(config, seed):
 
     # Set the seed for reproducibility
     set_seed(seed)
 
     # ============= VARIABLES =============
-    misc_configs = config['misc']
-    dataset_configs = config['dataset']
-    model_configs = config['model']
-    augmentation_configs = config['augmentation']
-    loss_configs = config['loss']
-    training_configs = config['training']
-    val_configs = config['validation']
-    test_configs = config['test']
-
+    misc_configs = config.MISC
+    dataset_configs = config.REID.DATASET
+    model_configs = config.REID.MODEL
+    augmentation_configs = config.REID.AUGMENTATION
+    loss_configs = config.REID.LOSS
+    training_configs = config.REID.TRAINING
+    val_configs = config.REID.VALIDATION
+    test_configs = config.REID.TEST
+    
     # Misc variables
-    use_amp = misc_configs['use_amp']
-    output_dir = misc_configs['output_dir']
+    use_amp = misc_configs.USE_AMP
+    output_dir = misc_configs.OUTPUT_DIR
+    device = misc_configs.DEVICE
     
     # Dataset variables
-    data_path = dataset_configs['data_path']
-    dataset_name = dataset_configs['dataset_name']
-    dataset_size = dataset_configs['dataset_size']
-    sampler_type = dataset_configs['sampler_type']
-    num_instances = dataset_configs['num_instances']
+    data_path = dataset_configs.DATA_PATH
+    dataset_name = dataset_configs.DATASET_NAME
+    dataset_size = dataset_configs.DATASET_SIZE
+    sampler_type = dataset_configs.SAMPLER_TYPE
+    num_instances = dataset_configs.NUM_INSTANCES
 
     # Model parameters
-    device = model_configs['device']
-    model_name = model_configs['model']
-    pretrained = model_configs['pretrained']
+    model_name = model_configs.NAME
+    pretrained = model_configs.PRETRAINED
 
     # Loss parameters
-    loss_type = loss_configs['type']
-    alpha = loss_configs['alpha']
-    k = loss_configs['k']
-    margin = loss_configs['margin']
-    label_smoothing = loss_configs['label_smoothing']
-    apply_MALW = loss_configs['apply_MALW']
-    use_rptm, _ = loss_configs['use_rptm']
+    loss_type = loss_configs.TYPE
+    alpha = loss_configs.ALPHA
+    k = loss_configs.K
+    margin = loss_configs.MARGIN
+    label_smoothing = loss_configs.LABEL_SMOOTHING
+    apply_MALW = loss_configs.APPLY_MALW
+    use_rptm, _ = loss_configs.USE_RPTM
 
     # Training parameters
-    batch_size = training_configs['batch_size']
-    num_workers = training_configs['num_workers']
+    batch_size = training_configs.BATCH_SIZE
+    num_workers = training_configs.NUM_WORKERS
 
     # Validation parameters
-    batch_size_val = val_configs['batch_size']
-    val_interval = val_configs['val_interval']
+    batch_size_val = val_configs.BATCH_SIZE
+    val_interval = val_configs.VAL_INTERVAL
 
     # =====================================
 
@@ -83,18 +85,17 @@ def main(config, config_file, seed):
     print("|         ---        Rome, Italy        ---         |")
     print("|***************************************************|")
 
-    if ('cuda' in device and torch.cuda.is_available()):
+    if device == 'cuda' and torch.cuda.is_available():
         print('Cuda available: {}'.format(torch.cuda.is_available()))
         if (torch.cuda.device_count() > 1):
             print(f"Detected multiple GPUs. Devices: {torch.cuda.device_count()}")
-            print(f"Using the GPU number: {device.split(':')[1]}")
-        device = torch.device(device=device)
-
+            print(f"Using the GPU number: {misc_configs.GPU_ID}")
+        device = torch.device(device=device + ":" + str(misc_configs.GPU_ID))
         print("GPU: " + torch.cuda.get_device_name(device))
         print("Total memory: {:.1f} GB".format((float(torch.cuda.get_device_properties(device).total_memory / (1024 ** 3)))))
     else:
         device = torch.device("cpu")
-        print('Cuda not available, so using CPU. Please consider switching to a GPU runtime before running the notebook!')
+        print('Cuda not available, so using CPU. Please consider switching to a GPU runtime before running the script!')
 
     print("===================================================")
     print(F"Torch version: {torch.__version__}")
@@ -179,15 +180,15 @@ def main(config, config_file, seed):
         print(f"Output directory created: {output_dir}")
 
     # Save the config file
-    output_config = os.path.join(output_dir, config_file)
-    shutil.copy(config_file, output_config)
+    output_config = os.path.join(output_dir, "config.yaml")
+    with open(output_config, "w") as f: f.write(cfg_file.dump())
     print(f"Config file saved to: {output_config}")
 
     # Create the Trainer
     trainer = Trainer(
         model=[model, None],
         val_interval=val_interval,
-        dataloaders={'train': train_loader, 'val': {val_loader, len(dataset_builder.dataset.query)},
+        dataloaders={'train': train_loader, 'val': (val_loader, len(dataset_builder.dataset.query)),
                      'dataset': dataset_builder.dataset, 'transform': dataset_builder.transforms},
         loss_fn=loss_fn,
         device=device,
@@ -197,19 +198,18 @@ def main(config, config_file, seed):
 
 # Usage: python main.py <path_to_config.yml>
 if __name__ == '__main__':
-    config_file = 'config.yml'
-    if len(sys.argv) != 2:
-        print("You might be using an IDE to run the script or forgot to append the config file. Running with default config file: 'config.yml'")
+    parser = argparse.ArgumentParser(description="Vehicle Re-ID")
+    parser.add_argument("--config_file", default="", help="Path to config file", type=str)
+    args = parser.parse_args()
+
+    # Load the config file
+    if args.config_file != "":
+        cfg_file.merge_from_file(args.config_file)
     else:
-        config_file = sys.argv[1]
-
-    # Parameters from config.yml file
-    with open(config_file, 'r') as f:
-        config = yaml.load(f, yaml.FullLoader)['reid']
-
+        print("No config file specified. Running with default config file!")
+    
     # Get the seed from the config
-    # Default to 2047315 if not specified
-    seed = config.get('misc', {}).get('seed', 2047315)
+    seed = cfg_file.MISC.SEED
 
     # Run the main function with the seed
-    main(config, config_file, seed)
+    main(cfg_file, seed)

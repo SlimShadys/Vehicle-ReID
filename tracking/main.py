@@ -7,25 +7,7 @@ import yaml
 from ultralytics import YOLO
 import random
 
-def compute_iou(box1, box2):
-    x1, y1, x2, y2 = box1
-    x1_prime, y1_prime, x2_prime, y2_prime = box2
-
-    xi1 = max(x1, x1_prime)
-    yi1 = max(y1, y1_prime)
-    xi2 = min(x2, x2_prime)
-    yi2 = min(y2, y2_prime)
-
-    inter_area = max(0, xi2 - xi1) * max(0, yi2 - yi1)
-    
-    box1_area = (x2 - x1) * (y2 - y1)
-    box2_area = (x2_prime - x1_prime) * (y2_prime - y1_prime)
-    
-    union_area = box1_area + box2_area - inter_area
-    
-    iou = inter_area / union_area
-    
-    return iou
+from misc.utils import compute_iou
 
 # Parameters from config.yml file
 with open('tracking/config.yml', 'r') as f:

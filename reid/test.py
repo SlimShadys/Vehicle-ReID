@@ -1,18 +1,23 @@
+import argparse
+import os
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import os
 import random
 import sys
+from config import _C as cfg_file
 
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import torch
-import yaml
-from dataset import DatasetBuilder
-from datasets.transforms import Transformations
+from reid.dataset import DatasetBuilder
+from reid.datasets.transforms import Transformations
 from misc.utils import euclidean_dist, read_image
-from model import ModelBuilder
+from reid.model import ModelBuilder
 from torch.utils.data import DataLoader
-from train import Trainer
+from reid.train import Trainer
 
 def set_seed(seed):
     random.seed(seed)
@@ -139,35 +144,37 @@ def main(config, seed):
     print("|***************************************************|")
 
     # ============= VARIABLES =============
-    misc_configs = config['misc']
-    dataset_configs = config['dataset']
-    model_configs = config['model']
-    augmentation_configs = config['augmentation']
-    val_configs = config['validation']
-    test_configs = config['test']
+    misc_configs = config.MISC
+    dataset_configs = config.REID.DATASET
+    model_configs = config.REID.MODEL
+    augmentation_configs = config.REID.AUGMENTATION
+    val_configs = config.REID.VALIDATION
+    test_configs = config.REID.TEST
+
+    # Misc variables
+    device = misc_configs.DEVICE
 
     # Dataset variables
-    data_path = dataset_configs['data_path']
-    dataset_name = dataset_configs['dataset_name']
-    dataset_size = dataset_configs['dataset_size']
+    data_path = dataset_configs.DATA_PATH
+    dataset_name = dataset_configs.DATASET_NAME
+    dataset_size = dataset_configs.DATASET_SIZE
 
     # Model parameters
-    device = model_configs['device']
-    model_name = model_configs['model']
-    pretrained = model_configs['pretrained']
+    model_name = model_configs.NAME
+    pretrained = model_configs.PRETRAINED
 
     # Validation parameters
-    batch_size_val = val_configs['batch_size']
+    batch_size_val = val_configs.BATCH_SIZE
 
     # Test parameters
-    run_reid_metrics = test_configs['run_reid_metrics']
-    run_color_metrics = test_configs['run_color_metrics']
-    stack_images = test_configs['stack_images']
-    similarity = test_configs['similarity']
-    normalize_embeddings = test_configs['normalize_embeddings']
-    model_val_path = test_configs['model_val_path']
-    img_path_1 = test_configs['path_img_1']
-    img_path_2 = test_configs['path_img_2']
+    run_reid_metrics = test_configs.RUN_REID_METRICS
+    run_color_metrics = test_configs.RUN_COLOR_METRICS
+    stack_images = test_configs.STACK_IMAGES
+    similarity = test_configs.SIMILARITY
+    normalize_embeddings = test_configs.NORMALIZE_EMBEDDINGS
+    model_val_path = test_configs.MODEL_VAL_PATH
+    img_path_1 = test_configs.PATH_IMG_1
+    img_path_2 = test_configs.PATH_IMG_2
     # =====================================
 
     # Number of classes in each dataset (Only for ID classification tasks, hence only training set is considered)
@@ -177,31 +184,34 @@ def main(config, seed):
         'vehicle_id': 13164,
         'vru': 7086,
     }
+    
+    model = None
 
-    print("--------------------")
-    print(f"Building {model_name} model...")
-    model_builder = ModelBuilder(
-        model_name=model_name,
-        pretrained=pretrained,
-        num_classes=num_classes[dataset_name],
-        model_configs=model_configs
-    )
+    if run_reid_metrics == True:
+        print("--------------------")
+        print(f"Building {model_name} model...")
+        model_builder = ModelBuilder(
+            model_name=model_name,
+            pretrained=pretrained,
+            num_classes=num_classes[dataset_name],
+            model_configs=model_configs
+        )
 
-    # Get the model and move it to the device
-    model = model_builder.move_to(device)
+        # Get the model and move it to the device
+        model = model_builder.move_to(device)
 
-    # Load parameters from a .pth file
-    if (model_val_path is not None):
-        print("Loading model parameters from file...")
-        if ('ibn' in model_name):
-            model.load_param(model_val_path)
-        else:
-            checkpoint = torch.load(model_val_path, map_location=device)
-            model.load_state_dict(checkpoint['model'])
-        print(f"Successfully loaded model parameters from file: {model_val_path}")
+        # Load parameters from a .pth file
+        if (model_val_path is not None):
+            print("Loading model parameters from file...")
+            if ('ibn' in model_name):
+                model.load_param(model_val_path)
+            else:
+                checkpoint = torch.load(model_val_path, map_location=device)
+                model.load_state_dict(checkpoint['model'])
+            print(f"Successfully loaded model parameters from file: {model_val_path}")
 
-    model.eval()
-    print(model)
+        model.eval()
+        print(model)
 
     if run_reid_metrics == False and run_color_metrics == False:
         # Define the validation transformations
@@ -226,8 +236,8 @@ def main(config, seed):
         # Create Dataset and DataLoaders
         print(f"Building Dataset:")
         print(f"- Name: {dataset_name}")
-        if dataset_name in ['veri_wild', 'vehicle_id']:
-            print(f"- Size: {dataset_size}")
+        if dataset_name in ['vehicle_id']:
+            raise ValueError(f"Unfortunately this dataset doesn't have color infos for Test vehicles.")
         print("--------------------")
 
         dataset_builder = DatasetBuilder(data_path=data_path, dataset_name=dataset_name,
@@ -243,14 +253,18 @@ def main(config, seed):
                                 pin_memory=True, drop_last=False)
 
         if run_color_metrics:
-            print(f"Building color model...")
-            model_builder = ModelBuilder(
-                model_name='color_model',
-                pretrained=pretrained,
-                num_classes=num_classes[dataset_name],
-                model_configs=model_configs
-            )
-            color_model = model_builder.move_to(device)
+            color_model = torch.load('best_model_epoch_3_l-0.2243_a-93.1636.pt')
+            color_model = color_model.to(device)
+            print("Color model loaded successfully!")
+
+            # print(f"Building color model...")
+            # model_builder = ModelBuilder(
+            #     model_name='color_model',
+            #     pretrained=pretrained,
+            #     num_classes=num_classes[dataset_name],
+            #     model_configs=config.REID.COLOR_MODEL
+            # )
+            # color_model = model_builder.move_to(device)
         else:
             color_model = None
 
@@ -258,7 +272,7 @@ def main(config, seed):
         trainer = Trainer(
             model=[model, color_model],
             val_interval=0,
-            dataloaders={'train': None, 'val': {val_loader, len(dataset_builder.dataset.query)},
+            dataloaders={'train': None, 'val': (val_loader, len(dataset_builder.dataset.query)),
                         'dataset': dataset_builder.dataset, 'transform': dataset_builder.transforms},
             loss_fn=None,
             device=device,
@@ -269,21 +283,20 @@ def main(config, seed):
         
         trainer.validate(save_results=False, metrics=metrics)
 
-# Usage: python test.py <path_to_config.yml>
+# Usage: python main.py <path_to_config.yml>
 if __name__ == '__main__':
-    config_file = 'config_test.yml'
-    if len(sys.argv) != 2:
-        print("You might be using an IDE to run the script or forgot to append the config file. Running with default config file: 'config.yml'")
+    parser = argparse.ArgumentParser(description="Vehicle Re-ID - Test")
+    parser.add_argument("--config_file", default="configs/config_test.yml", help="Path to config file", type=str)
+    args = parser.parse_args()
+
+    # Load the config file
+    if args.config_file != "":
+        cfg_file.merge_from_file(args.config_file)
     else:
-        config_file = sys.argv[1]
-
-    # Parameters from config.yml file
-    with open(config_file, 'r') as f:
-        config = yaml.load(f, yaml.FullLoader)['reid']
-
+        print("No config file specified. Running with default config file!")
+    
     # Get the seed from the config
-    # Default to 2047315 if not specified
-    seed = config.get('misc', {}).get('seed', 2047315)
+    seed = cfg_file.MISC.SEED
 
     # Run the main function with the seed
-    main(config, seed)
+    main(cfg_file, seed)

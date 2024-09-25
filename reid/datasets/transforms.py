@@ -35,19 +35,19 @@ class Transformations:
         self.dataset = dataset
 
         # Various transformations settings
-        self.height = configs['height']
-        self.width = configs['width']
-        self.horizontal_flip_prob = configs['random_horizontal_flip_prob']
-        self.random_crop = tuple(configs['random_crop'])
-        self.erasing_prob = configs['random_erasing_prob']
-        self.jitter_brightness = configs['jitter_brightness']
-        self.jitter_contrast = configs['jitter_contrast']
-        self.jitter_saturation = configs['jitter_saturation']
-        self.jitter_hue = configs['jitter_hue']
-        self.color_augmentation = configs['color_augmentation']
-        self.padding = configs['padding']
-        self.mean = configs['normalize_mean']   # ImageNet mean
-        self.std = configs['normalize_std']     # ImageNet std
+        self.height = configs.HEIGHT if configs is not None else 0
+        self.width = configs.WIDTH if configs is not None else 0
+        self.horizontal_flip_prob = configs.RANDOM_HORIZONTAL_FLIP_PROB if configs is not None else 0.0
+        self.random_crop = tuple(configs.RANDOM_CROP) if configs is not None else (0, 0)
+        self.erasing_prob = configs.RANDOM_ERASING_PROB if configs is not None else 0.0
+        self.jitter_brightness = configs.JITTER_BRIGHTNESS if configs is not None else 0.0
+        self.jitter_contrast = configs.JITTER_CONTRAST if configs is not None else 0.0
+        self.jitter_saturation = configs.JITTER_SATURATION if configs is not None else 0.0
+        self.jitter_hue = configs.JITTER_HUE if configs is not None else 0.0
+        self.color_augmentation = configs.COLOR_AUGMENTATION if configs is not None else False
+        self.padding = configs.PADDING if configs is not None else 0.0
+        self.mean = configs.NORMALIZE_MEAN if configs is not None else None  # ImageNet mean
+        self.std = configs.NORMALIZE_STD if configs is not None else None  # ImageNet std
 
         # ================= TRAIN TRANSFORMS =================
         self.transform_train = []

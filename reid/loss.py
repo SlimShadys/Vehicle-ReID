@@ -1,8 +1,8 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from losses.supcon_loss import SupConLoss
-from losses.triplet_loss import TripletLoss, TripletLossRPTM
+from reid.losses.supcon_loss import SupConLoss
+from reid.losses.triplet_loss import TripletLoss, TripletLossRPTM
 from pytorch_metric_learning import distances as py_distances
 from pytorch_metric_learning import losses as py_losses
 from pytorch_metric_learning import miners as py_miners

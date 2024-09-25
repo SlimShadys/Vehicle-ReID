@@ -1,7 +1,7 @@
 import torch.nn as nn
-from models.layers import Bottleneck_IBN
-from models.resnet import ResNet, ResNet_IBN
-from models.color_model import CarClassifier
+from reid.models.layers import Bottleneck_IBN
+from reid.models.resnet import ResNet, ResNet_IBN
+from reid.models.color_model import CarClassifier
 
 resnet_urls = {
     'resnet18': "https://download.pytorch.org/models/resnet18-f37072fd.pth",
@@ -44,6 +44,10 @@ class ModelBuilder:
 
     # Specific Model Builder for ResNet family
     def build_resnet(self):
+        use_gem = self.model_configs.USE_GEM # GeM or AdaptiveAvg pooling
+        use_stride = self.model_configs.USE_STRIDE # Use stride in the last layer
+        use_bottleneck = self.model_configs.USE_BOTTLENECK # Use Bottleneck block
+        
         if self.model_name not in self.resnet_models:
             raise ValueError(f"Unsupported ResNet model: {self.model_name}")
 
@@ -60,16 +64,16 @@ class ModelBuilder:
                               num_classes=self.num_classes,
                               fc_dims=None,
                               dropout_p=None,
-                              use_gem=self.model_configs.get('use_gem', False),
-                              use_stride=self.model_configs.get('use_stride', False),
-                              use_bottleneck=self.model_configs.get('use_bottleneck', False),
+                              use_gem=use_gem,
+                              use_stride=use_stride,
+                              use_bottleneck=use_bottleneck,
                               pretrained=(self.pretrained, resnet_urls[self.model_name]))
         else:
             return ResNet(self.model_name,
                           self.num_classes,
-                          use_gem=self.model_configs.get('use_gem', False),
-                          use_stride=self.model_configs.get('use_stride', False),
-                          use_bottleneck=self.model_configs.get('use_bottleneck', False),
+                          use_gem=use_gem,
+                          use_stride=use_stride,
+                          use_bottleneck=use_bottleneck,
                           pretrained=(self.pretrained, resnet_urls[self.model_name]))
 
     # Specific Model Builder for Vision Transformer
@@ -77,7 +81,7 @@ class ModelBuilder:
         raise NotImplementedError("ViT model is not implemented yet")
 
     def build_color_model(self):
-        return CarClassifier(configs=self.model_configs['color_classifier'])
+        return CarClassifier(configs=self.model_configs)
 
     def move_to(self, device):
         # No Torch CUDA support for Color Model (it's a TF model)

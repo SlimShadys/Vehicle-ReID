@@ -1,0 +1,44 @@
+# NOTE n.1 : If use_rptm is True, loss must be TripletLossRPTM.
+
+reid:
+  # === MISC CONFIGURATION ===
+  misc:
+    output_dir: "results_rptm"
+   
+  # === LOSS CONFIGURATION ===
+  loss:
+    type: "TripletLossRPTM" # TripletLoss / TripletLossRPTM / SupConLoss / SupConLoss_Pytorch / TripletMarginLoss_Pytorch
+    # ===> RPTM configuration
+    use_rptm: [True, "mean"]
+    # ===> TripletLoss configuration
+    margin: 1.00
+    # ===> Label Smoothing configuration
+    label_smoothing: 0.00
+    # ===> MALW configuration
+    apply_MALW: False
+    alpha: 0.9
+    k: 2000
+
+  # === TRAINING CONFIGURATION ===
+  training:
+    epochs: 160
+    batch_size: 36
+    num_workers: 8
+    # ===> Optimizer configuration
+    optimizer: "adam" # adam / sgd
+    learning_rate: 1.5e-4
+    bias_lr_factor: 2
+    weight_decay: 0.0005
+    weight_decay_bias: 0.0001
+    # ===> Scheduler configuration (WarmupDecayLR or MultiStepLR)
+    use_warmup: True
+    steps: [40, 75, 105, 135]
+    gamma: 0.1
+    warmup_epochs: 10
+    decay_method: "cosine" # "linear" / "smooth" / "cosine"
+    cosine_power: 1.00 # Only to be adjusted if decay_method is "cosine"
+    min_lr: 3.5e-5
+    # ===> Logging configuration
+    log_interval: 100
+    # ===> Loading checkpoint
+    load_checkpoint: False # Could be also a path to a checkpoint

@@ -9,11 +9,19 @@ class VehicleID():
         # Generic variables
         self.dataset_name = 'vehicle_id'
         self.data_path = os.path.join(data_path, 'VehicleID')
+        
         self.dataset_sizes = {'small': 800, 'medium': 1600, 'large': 2400} # Number of test images - 800 (Small), 1600 (Medium), 2400 (Large)
         self.test_size = self.dataset_sizes[dataset_size]
 
         # Vehicle Infos
         self.vehicle_infos = self.get_vehicle_infos(os.path.join(self.data_path, 'attribute'))
+        
+        # Read color IDs
+        self.color_dict = {}
+        with open(os.path.join(self.data_path, 'attribute', 'color_names.txt'), 'r') as file:
+            for line in file:
+                color, index = line.strip().split(' ', 1)
+                self.color_dict[int(index)] = color.lower()
 
         # Directory
         self.img_dir = os.path.join(self.data_path, 'image')
@@ -84,7 +92,7 @@ class VehicleID():
                 if int(vid) == -1:
                     continue  # junk images are just ignored
                 else:
-                    assert 0 <= int(vid) <= 27957  # pid == 0 means background
+                    assert 0 <= int(vid) <= 27957 # pid == 0 means background
                     img2vid[img] = int(vid)
 
         # Vehicle ID to Color ID mapping
@@ -277,3 +285,14 @@ class VehicleID():
         all_car_ids = {car_id for _, _, car_id, _, _, _, _, _ in self.train}
         # Get the unique car IDs
         return len(all_car_ids)
+    
+    def get_color_index(self, color_pred: str):
+        for index, color in self.color_dict.items():
+            if color == color_pred:
+                return index
+            
+        # If the code reaches this point, it means that the color is not found
+        # Hence, we would like to add it to the list of colors
+        color_index = len(self.color_dict) + 1
+        self.color_dict[color_index] = color_pred
+        return color_index

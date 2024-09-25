@@ -14,11 +14,11 @@ class TypeClassifier():
         self.configs = configs
         self.topK = topK
         
-        self.classifier_input_size = self.configs['input_size']
-        self.input_layer = self.configs['input_layer']
-        self.output_layer = self.configs['output_layer']
-        self.model_file = self.configs['model_file']
-        self.label_file = self.configs['label_file']
+        self.classifier_input_size = self.configs.INPUT_SIZE
+        self.input_layer = self.configs.INPUT_LAYER
+        self.output_layer = self.configs.OUTPUT_LAYER
+        self.model_file = self.configs.MODEL_FILE
+        self.label_file = self.configs.LABEL_FILE
 
         self.graph = load_graph(self.model_file)
         self.labels = load_labels(self.label_file)
@@ -40,8 +40,7 @@ class TypeClassifier():
 
         # Scale the input image to the range used in the trained network
         img = img.astype(np.float32)
-        img /= 127.5
-        img -= 1.
+        img = img / 255.0
 
         results = self.sess.run(self.output_operation.outputs[0], {self.input_operation.outputs[0]: img})
         results = np.squeeze(results)
@@ -60,11 +59,11 @@ class ColorClassifier():
         self.configs = configs
         self.topK = topK
         
-        self.classifier_input_size = self.configs['input_size']
-        self.input_layer = self.configs['input_layer']
-        self.output_layer = self.configs['output_layer']
-        self.model_file = self.configs['model_file']
-        self.label_file = self.configs['label_file']
+        self.classifier_input_size = self.configs.INPUT_SIZE
+        self.input_layer = self.configs.INPUT_LAYER
+        self.output_layer = self.configs.OUTPUT_LAYER
+        self.model_file = self.configs.MODEL_FILE
+        self.label_file = self.configs.LABEL_FILE
 
         self.graph = load_graph(self.model_file)
         self.labels = load_labels(self.label_file)
@@ -78,33 +77,26 @@ class ColorClassifier():
         self.sess.graph.finalize()  # Graph is read-only after this statement.
 
     def predict(self, img_batch):
+        # Converted flag to determine if the input was a tensor or a numpy array
+        #    - True: input was a tensor (likely a color metric test) – no image processing needed.
+        #    - False: input was a numpy array (likely from a full pipeline procedure) – image processing required.
+        converted = False
+        
         # Create a new numpy array to accomodate the resized images
         img_batch_resized = np.zeros((len(img_batch), self.classifier_input_size[0], self.classifier_input_size[1], 3))
 
-        img_batch = img_batch.permute((0, 2, 3, 1)).cpu().numpy()
-
+        if type(img_batch) is not np.ndarray:
+            img_batch = img_batch.detach().cpu().numpy()
+            img_batch = np.transpose(img_batch, (0, 2, 3, 1))
+            converted = True
+            
         for i, img in enumerate(img_batch):
-            img = cv2.resize(img, self.classifier_input_size)
-            img = img.astype(np.float32)
-            # img /= 127.5
-            # img -= 1.
+            img = cv2.resize(img, self.classifier_input_size)       # Resize the image
+            if not converted:
+                img = img[:, :, ::-1]                               # Reverse the channels from RGB to BGR
+                img = img / 255.0                                   # Normalize the image to the range [0, 1]
+                img = img.astype(np.float32)                        # Convert the image to float32
             img_batch_resized[i] = img
-
-        # # Transform the img Tensor into a numpy array
-        # img = img.detach().cpu().numpy()
-        # img = np.transpose(img, (0, 2, 3, 1))
-
-        # # Reverse the channels from RGB to BGR for each image in the batch
-        # img_batch = img_batch[:, :, :, ::-1]
-
-        # # Resize each image in the batch
-        # for i, img in enumerate(img_batch):
-        #     img_batch_resized[i] = cv2.resize(img, self.classifier_input_size)
-
-        # # Scale the input images to the range used in the trained network
-        # img_batch_resized = img_batch_resized.astype(np.float32)
-        # img_batch_resized /= 127.5
-        # img_batch_resized -= 1.
 
         # Run the prediction for the entire batch
         results = self.sess.run(self.output_operation.outputs[0], {self.input_operation.outputs[0]: img_batch_resized})
@@ -132,7 +124,7 @@ class CarClassifier():
         self.configs = configs
 
         # Top K results to show
-        self.topK = self.configs.get('topK', 3)
+        self.topK = self.configs.TOP_K
 
         # Instantiate the classifiers        
         self.color_classifier = ColorClassifier(self.configs, topK=self.topK)

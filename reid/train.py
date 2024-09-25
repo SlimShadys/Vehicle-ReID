@@ -1,22 +1,22 @@
 import os
 import random
-from typing import Dict, Optional, Type, Union
+from typing import Dict, Optional, Tuple, Type, Union
 
 import numpy as np
 import numpy.ma as ma
 import torch
-from datasets.transforms import Transformations
-from datasets.vehicle_id import VehicleID
-from datasets.veri_776 import Veri776
-from datasets.veri_wild import VeriWild
-from datasets.vru import VRU
-from loss import LossBuilder
+from reid.datasets.transforms import Transformations
+from reid.datasets.vehicle_id import VehicleID
+from reid.datasets.veri_776 import Veri776
+from reid.datasets.veri_wild import VeriWild
+from reid.datasets.vru import VRU
+from reid.loss import LossBuilder
 from misc.utils import (euclidean_dist, eval_func, load_model, re_ranking,
                         read_image, save_model, search, strint,
                         visualize_ranked_results)
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from training.scheduler import WarmupDecayLR
+from reid.training.scheduler import WarmupDecayLR
 
 from sklearn.metrics import confusion_matrix
 import seaborn as sns
@@ -26,14 +26,14 @@ class Trainer:
     def __init__(
         self,
         model: Union[torch.nn.Module, torch.nn.Module],
-        # dataloaders: Dict[str, Union[
-        #                                 Optional[DataLoader],
-        #                                 Dict[str, Union[DataLoader, int]], 
-        #                                 Type[Union[VehicleID, Veri776, VeriWild, VRU]], 
-        #                                 Transformations
-        #                             ]
-        #                 ],
-        dataloaders,
+        dataloaders: Dict[str, Union[
+                                        Optional[DataLoader],
+                                        Dict[str, Tuple[DataLoader, int]], 
+                                        Type[Union[VehicleID, Veri776, VeriWild, VRU]], 
+                                        Transformations
+                                    ]
+                        ],
+        #dataloaders,
         val_interval: int,
         loss_fn: LossBuilder,
         configs,
@@ -50,37 +50,37 @@ class Trainer:
         self.misc_configs, self.augmentation_configs, self.loss_configs, self.train_configs, self.val_configs, self.test_configs = configs
 
         # Test configurations (Whether we are testing or not)
-        self.testing = self.test_configs['testing']
+        self.testing = self.test_configs.TESTING
 
         # Misc configurations
-        self.output_dir = self.misc_configs['output_dir']
-        self.use_amp = self.misc_configs['use_amp']
+        self.output_dir = self.misc_configs.OUTPUT_DIR
+        self.use_amp = self.misc_configs.USE_AMP
 
         if (self.testing == False):
             # Training configurations
-            self.epochs = self.train_configs['epochs']
-            self.learning_rate = self.train_configs['learning_rate']
-            self.log_interval = self.train_configs['log_interval']
-            self.load_checkpoint = self.train_configs['load_checkpoint']
-            self.use_warmup = self.train_configs['use_warmup']
-            self.batch_size = self.train_configs['batch_size']
+            self.epochs = self.train_configs.EPOCHS
+            self.learning_rate = self.train_configs.LEARNING_RATE
+            self.log_interval = self.train_configs.LOG_INTERVAL
+            self.load_checkpoint = self.train_configs.LOAD_CHECKPOINT
+            self.use_warmup = self.train_configs.USE_WARMUP
+            self.batch_size = self.train_configs.BATCH_SIZE
 
             # Loss configs
-            self.use_rptm, self.rptm_type = self.loss_configs['use_rptm']
+            self.use_rptm, self.rptm_type = self.loss_configs.USE_RPTM
             if self.use_rptm:
                 self.max_negative_labels = self.dataset.max_negative_labels
 
             # Optimizer configurations
-            self.weight_decay = self.train_configs['weight_decay']
-            self.weight_decay_bias = self.train_configs['weight_decay_bias']
-            self.bias_lr_factor = self.train_configs['bias_lr_factor']
-            self.optimizer_name = self.train_configs['optimizer']
+            self.weight_decay = self.train_configs.WEIGHT_DECAY
+            self.weight_decay_bias = self.train_configs.WEIGHT_DECAY_BIAS
+            self.bias_lr_factor = self.train_configs.BIAS_LR_FACTOR
+            self.optimizer_name = self.train_configs.OPTIMIZER
 
             # Augmentation configurations
-            self.img_height = self.augmentation_configs['height'] + \
-                self.augmentation_configs['padding'] * 2
-            self.img_width = self.augmentation_configs['width'] + \
-                self.augmentation_configs['padding'] * 2
+            self.img_height = self.augmentation_configs.HEIGHT + \
+                self.augmentation_configs.PADDING * 2
+            self.img_width = self.augmentation_configs.WIDTH + \
+                self.augmentation_configs.PADDING * 2
 
             self.start_epoch = 0
             self.running_loss = []
@@ -89,8 +89,8 @@ class Trainer:
             self.acc_list = []
 
         # Validation configurations
-        self.re_ranking = self.val_configs['re_ranking']
-        self.visualize_ranks = self.val_configs['visualize_ranks']
+        self.re_ranking = self.val_configs.RE_RANKING
+        self.visualize_ranks = self.val_configs.VISUALIZE_RANKS
 
         if (self.testing == False):
             # Update the weights decay and learning rate for the model
@@ -123,16 +123,16 @@ class Trainer:
                 # Then, we decay the LR using the milestones or a smooth decay
                 self.scheduler = WarmupDecayLR(
                     optimizer=self.optimizer,
-                    milestones=self.train_configs['steps'],
-                    warmup_epochs=self.train_configs['warmup_epochs'],
-                    gamma=self.train_configs['gamma'],
-                    cosine_power=self.train_configs['cosine_power'],
-                    decay_method=self.train_configs['decay_method'],
-                    min_lr=self.train_configs['min_lr']
+                    milestones=self.train_configs.STEPS,
+                    warmup_epochs=self.train_configs.WARMUP_EPOCHS,
+                    gamma=self.train_configs.GAMMA,
+                    cosine_power=self.train_configs.COSINE_POWER,
+                    decay_method=self.train_configs.DECAY_METHOD,
+                    min_lr=self.train_configs.MIN_LR
                 )
             else:
                 self.scheduler = torch.optim.lr_scheduler.MultiStepLR(
-                    self.optimizer, milestones=self.train_configs['steps'], gamma=self.train_configs['gamma'])
+                    self.optimizer, milestones=self.train_configs.STEPS, gamma=self.train_configs.GAMMA)
 
             # Check if load checkpoint is not False. If it is not False, check if the string is not empty, then load the model
             if (self.load_checkpoint != False and self.load_checkpoint != ''):
@@ -333,8 +333,27 @@ class Trainer:
                       f"LR: {self.scheduler.get_lr()[0]:.2e}")
 
     def validate_color(self, img, color_id: torch.Tensor):
+
+        mapping = {
+            0: 'black',
+            1: 'blue',
+            2: 'brown',
+            3: 'green',
+            4: 'gray',
+            5: 'orange',
+            6: 'pink',
+            7: 'purple',
+            8: 'red',
+            9: 'white',
+            10: 'yellow'
+        }
+
         # Run inference on the color model | self.color_model.predict(image)
-        color_predictions = self.car_classifier.color_classifier.predict(img)
+        #color_predictions = self.car_classifier.color_classifier.predict(img)
+        color_predictions = self.car_classifier(img)
+
+        # convert from logits to probs
+        color_predictions = torch.nn.functional.softmax(color_predictions, dim=1)
 
         # We need to decode the color predictions, which are in a format:
         # [{'color': 'black', 'prob': '0.9999'}, ...]
@@ -347,8 +366,9 @@ class Trainer:
 
         # Iterate through the color predictions
         for i, color in enumerate(color_predictions):
-            color_prediction = color[0]['color'].lower()
+            #color_prediction = color[0]['color'].lower()
             # We need to convert this color prediction back to the index of the color (list_color)
+            color_prediction = mapping[torch.argmax(color).item()]
             predicted_index = self.dataset.get_color_index(color_prediction)
             predicted_color_indices.append(predicted_index)
             color_predictions_tensor[i][0] = predicted_index
@@ -356,11 +376,18 @@ class Trainer:
         predicted_color_indices = np.array(predicted_color_indices)
         actual_color_indices = color_id.detach().cpu().numpy()  # Assuming color_id is a tensor
         
+        # We have to remove the items which are -1 in the actual_color_indices
+        # as well as the corresponding indices in the predicted_color_indices and color_predictions_tensor
+        mask = actual_color_indices != -1
+        actual_color_indices = actual_color_indices[mask]
+        predicted_color_indices = predicted_color_indices[mask]
+        color_predictions_tensor = color_predictions_tensor[mask]
+        color_id = color_id[mask]
+        
         # Calculate the accuracy between the tensor of predictions and the color_id
         return (torch.max(color_predictions_tensor, 1)[0] == color_id).float().mean(), predicted_color_indices, actual_color_indices
 
-    def validate(self, epoch: Optional[int] = 0, save_results=False, metrics=None):
-        self.model.eval()
+    def validate(self, epoch: Optional[int] = 0, save_results=False, metrics=None): 
         num_query = self.num_query
         features, car_ids, cam_ids, paths = [], [], [], []
         color_accuracies, predictions_colors, ground_truth_colors = [], [], []
@@ -370,16 +397,21 @@ class Trainer:
                 img, car_id, cam_id, color_id = img.to(self.device), car_id.to(self.device), cam_id.to(self.device), color_id.to(self.device)
 
                 if 'reid' in metrics:
+                    self.model.eval()
                     with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=self.use_amp):
                         feat = self.model(img, training=False).detach().cpu()
                         features.append(feat)
 
                 if 'color' in metrics:
-                    # Run the color model here
+                    # Run the color model
                     color_accuracy, pred_colors, gt_colors = self.validate_color(img, color_id)
-                    color_accuracies.append(color_accuracy)
-                    predictions_colors.append(pred_colors)
-                    ground_truth_colors.append(gt_colors)
+                    
+                    # Append the color accuracy, predictions, and ground truth colors
+                    # Skip this step if the color_accuracy is NaN
+                    if (torch.isnan(color_accuracy).item() == False):
+                        color_accuracies.append(color_accuracy)
+                        predictions_colors.append(pred_colors)
+                        ground_truth_colors.append(gt_colors)
                 
                 # Append the car_id, cam_id, and paths generally without any condition
                 car_ids.append(car_id)
@@ -402,6 +434,9 @@ class Trainer:
             # gallery_path = np.array(paths[num_query:])
 
         if 'color' in metrics:
+            print("Total cars in the validation set: ", len(self.val_loader) * self.val_configs.BATCH_SIZE)
+            print("Total cars with color information: ", len(color_accuracies) * self.val_configs.BATCH_SIZE)
+            
             color_accuracies = torch.tensor(color_accuracies)
             print(f"Color Accuracy: {torch.mean(color_accuracies).item():.4f}%")
 
@@ -410,11 +445,11 @@ class Trainer:
             # In this way, we can see if the model is confusing the colors with very slightly different colors
             predictions_colors = np.concatenate([arr for arr in predictions_colors]).tolist()
             ground_truth_colors = np.concatenate([arr for arr in ground_truth_colors]).tolist()
-            conf_matrix = confusion_matrix(ground_truth_colors, predictions_colors, labels=list(self.dataset.color_dict.keys()))
+            conf_matrix = confusion_matrix(ground_truth_colors, predictions_colors, labels=list(self.dataset.color_dict.keys()), normalize='true')
 
             # Plot confusion matrix
             plt.figure(figsize=(10, 8))
-            sns.heatmap(conf_matrix, annot=True, fmt="d", cmap="Blues",
+            sns.heatmap(conf_matrix, annot=True, fmt=".2f", cmap="Blues",
                         xticklabels=list(self.dataset.color_dict.values()),
                         yticklabels=list(self.dataset.color_dict.values()))
             plt.xlabel('Predicted Color')

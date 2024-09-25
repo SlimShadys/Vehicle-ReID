@@ -1,0 +1,49 @@
+# === MISC CONFIGURATION ===
+MISC:
+  OUTPUT_DIR: "results_test"
+  DEVICE: "cuda"
+  GPU_ID: 0
+
+# === DATASET CONFIGURATION ===
+REID:
+  DATASET:
+    DATA_PATH: "./data"
+    DATASET_NAME: "veri_wild" # veri_776 / veri_wild / vehicle_id / vru
+    DATASET_SIZE: "small" # small / medium / large
+    SAMPLER_TYPE: "random" # random / balanced / None
+    NUM_INSTANCES: 6 # Only to be adjusted if sampler_type is either "random" or "balanced"
+
+  # === MODEL CONFIGURATION ===
+  MODEL:
+    NAME: "resnet50_ibn_a" # "resnet50" / "resnet101" / "resnet50_ibn_a" / "resnet101_ibn_a"
+    PRETRAINED: True
+    USE_GEM: False
+    USE_STRIDE: True
+    USE_BOTTLENECK: True
+
+  # === COLOR CLASSIFIER CONFIGURATION ===
+  COLOR_MODEL:
+    TOP_K: 3
+    MODEL_FILE: "./tracking/car-color-classifier/models/model-weights-spectrico-car-colors-recognition-mobilenet_v3-224x224-180420.pb"
+    LABEL_FILE: "./tracking/car-color-classifier/labels.txt" # color_classifier
+    INPUT_LAYER: "input_1"
+    OUTPUT_LAYER: "Predictions/Softmax/Softmax"
+    INPUT_SIZE: [224, 224]
+
+  # === VALIDATION CONFIGURATION ===
+  VALIDATION:
+    BATCH_SIZE: 16
+    RE_RANKING: True
+    VISUALIZE_RANKS: False
+
+  # === TEST CONFIGURATION ===
+  TEST:
+    TESTING: True # Always set to True (in config_test.yml) to avoid training the model etc.
+    NORMALIZE_EMBEDDINGS: False
+    RUN_REID_METRICS: False
+    RUN_COLOR_METRICS: True
+    PATH_IMG_1: "./data/test/honda_f.jpg"
+    PATH_IMG_2: "./data/test/honda_f_2.jpg"
+    STACK_IMAGES: True # Stack all the images to create a NxN matrix of similarity scores. Only available if run_reid_metrics is False
+    SIMILARITY: "cosine" # "euclidean" / "cosine"
+    MODEL_VAL_PATH: "./reid/results/Test-19/model_ep-136_loss-5.2181.pth"

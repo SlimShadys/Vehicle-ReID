@@ -4,20 +4,27 @@ data/*
 # Ignore GMS files
 gms/*
 
+# Ignore results for now
+reid/results/*
+
 # Ignore tracking example video and YOLO models
 tracking/video/*
 tracking/output/*
+tracking/__pycache__/*
 yolov*.pt
 
 # Ignore python cache files
 __pycache__/*
-datasets/__pycache__/*
-losses/__pycache__/*
 misc/__pycache__/*
-models/__pycache__/*
-results/__pycache__/*
-tracking/__pycache__/*
-training/__pycache__/*
+reid/__pycache__/*
+reid/datasets/__pycache__/*
+reid/losses/__pycache__/*
+reid/models/__pycache__/*
+reid/results/__pycache__/*
+reid/training/__pycache__/*
 
 # Ignore .mat files for now
 *.mat
+
+# Ignore .vscode
+.vscode/*

@@ -1,4 +1,5 @@
 import os
+import random
 import shutil
 
 import cv2
@@ -9,6 +10,26 @@ import torch.nn as nn
 import torch.utils.model_zoo as model_zoo
 from PIL import Image
 from tqdm import tqdm
+
+def compute_iou(box1, box2):
+    x1, y1, x2, y2 = box1
+    x1_prime, y1_prime, x2_prime, y2_prime = box2
+
+    xi1 = max(x1, x1_prime)
+    yi1 = max(y1, y1_prime)
+    xi2 = min(x2, x2_prime)
+    yi2 = min(y2, y2_prime)
+
+    inter_area = max(0, xi2 - xi1) * max(0, yi2 - yi1)
+    
+    box1_area = (x2 - x1) * (y2 - y1)
+    box2_area = (x2_prime - x1_prime) * (y2_prime - y1_prime)
+    
+    union_area = box1_area + box2_area - inter_area
+    
+    iou = inter_area / union_area
+    
+    return iou
 
 def read_image(img_path):
     """Keep reading image until succeed.
@@ -454,3 +475,14 @@ def resizeAndPad(img, size, padColor=0):
     scaled_img = cv2.copyMakeBorder(scaled_img, pad_top, pad_bot, pad_left, pad_right, borderType=cv2.BORDER_CONSTANT, value=padColor)
 
     return scaled_img
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # for multi-GPU
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    print("Correctly set the seed to:", seed)

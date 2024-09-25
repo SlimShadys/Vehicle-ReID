@@ -6,7 +6,7 @@ import torch.nn as nn
 import torchvision.models as models
 from misc.utils import (init_pretrained_weights, weights_init_classifier,
                         weights_init_kaiming)
-from .layers import GeM
+from reid.models.layers import GeM
 
 class ResNet(torch.nn.Module):
     def __init__(self, model_name: str, num_classes, use_gem=False, use_stride=False, use_bottleneck=False, pretrained=(False, None)):

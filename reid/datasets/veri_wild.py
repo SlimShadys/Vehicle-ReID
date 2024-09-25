@@ -103,7 +103,7 @@ class VeriWild():
         # We can do this by creating a dictionary for each of these attributes
         # Then, we can iterate through the dictionary and replace the name with the ID
         model_dict = {}
-        color_dict = {}
+        self.color_dict = {}
         type_dict = {}
 
         # Iterate through each Item element
@@ -134,13 +134,16 @@ class VeriWild():
 
                 if model_name not in model_dict:
                     model_dict[model_name] = len(model_dict)
-                if color_name not in color_dict:
-                    color_dict[color_name] = len(color_dict)
+                if color_name not in self.color_dict.values():
+                    idx = len(self.color_dict)
+                    self.color_dict[idx] = color_name
                 if type_name not in type_dict:
                     type_dict[type_name] = len(type_dict)
 
                 item['model_ID'] = model_dict[model_name]
-                item['color_ID'] = color_dict[color_name]
+                for index, color in self.color_dict.items():
+                    if color == color_name:
+                        item['color_ID'] = index
                 item['type_ID'] = type_dict[type_name]
 
         return vehicle_infos
@@ -198,3 +201,14 @@ class VeriWild():
         all_car_ids = {car_id for _, _, car_id, _, _, _, _, _ in self.train}
         # Get the unique car IDs
         return len(all_car_ids)
+    
+    def get_color_index(self, color_pred: str):
+        for index, color in self.color_dict.items():
+            if color == color_pred:
+                return index
+            
+        # If the code reaches this point, it means that the color is not found
+        # Hence, we would like to add it to the list of colors
+        color_index = len(self.color_dict) + 1
+        self.color_dict[color_index] = color_pred
+        return color_index

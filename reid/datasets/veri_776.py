@@ -131,7 +131,7 @@ class Veri776():
                 'camera_ID': camera_id_num,
                 'model_ID': -1, # Model ID is not available in the XML file
                 'type_ID': int(item.get('typeID')),
-                'color_ID': int(item.get('colorID')),
+                'color_ID': int(item.get('colorID')) - 1, # Subtract 1 to start from 0
                 'timestamp': 'None'
             }
             labels_dict[item.get('imageName')] = item_info
