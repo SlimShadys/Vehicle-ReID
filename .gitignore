@@ -11,6 +11,8 @@ reid/results/*
 tracking/video/*
 tracking/output/*
 tracking/__pycache__/*
+tracking/car-color-classifier/__pycache__/*
+tracking/car-color-classifier-v2/__pycache__/*
 yolov*.pt
 
 # Ignore python cache files

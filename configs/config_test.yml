@@ -23,6 +23,8 @@ REID:
 
   # === COLOR CLASSIFIER CONFIGURATION ===
   COLOR_MODEL:
+    NAME: "mobilenetv3" # "efficientnetv3" (our implementation) / "mobilenetv3" (this model is based on Spectrico's implementation)
+    EFFICIENTNET_PRETRAINED_PATH: "./tracking/car-color-classifier-v2/EfficientNet-B5_loss-0.2239_acc-94.0872.pt"
     TOP_K: 3
     MODEL_FILE: "./tracking/car-color-classifier/models/model-weights-spectrico-car-colors-recognition-mobilenet_v3-224x224-180420.pb"
     LABEL_FILE: "./tracking/car-color-classifier/labels.txt" # color_classifier
@@ -42,6 +44,7 @@ REID:
     NORMALIZE_EMBEDDINGS: False
     RUN_REID_METRICS: False
     RUN_COLOR_METRICS: True
+    PRINT_CONFUSION_MATRIX: True # Only available if run_color_metrics is True
     PATH_IMG_1: "./data/test/honda_f.jpg"
     PATH_IMG_2: "./data/test/honda_f_2.jpg"
     STACK_IMAGES: True # Stack all the images to create a NxN matrix of similarity scores. Only available if run_reid_metrics is False

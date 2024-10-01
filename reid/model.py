@@ -1,4 +1,5 @@
 import torch.nn as nn
+import torch
 from reid.models.layers import Bottleneck_IBN
 from reid.models.resnet import ResNet, ResNet_IBN
 from reid.models.color_model import CarClassifier
@@ -26,7 +27,8 @@ class ModelBuilder:
         self.model_builders = {
             'resnet': self.build_resnet,
             'vit': self.build_vit,
-            'color_model': self.build_color_model
+            'efficientnetv3': self.build_color_model,
+            'mobilenetv3': self.build_color_model,
         }
 
         # Supported ResNet models
@@ -81,11 +83,14 @@ class ModelBuilder:
         raise NotImplementedError("ViT model is not implemented yet")
 
     def build_color_model(self):
-        return CarClassifier(configs=self.model_configs)
+        if self.model_name == 'efficientnetv3':
+            return torch.load(self.model_configs.EFFICIENTNET_PRETRAINED_PATH)
+        elif self.model_name == 'mobilenetv3':
+            return CarClassifier(configs=self.model_configs)
 
     def move_to(self, device):
-        # No Torch CUDA support for Color Model (it's a TF model)
-        if self.model_name == 'color_model':
+        # No Torch CUDA support for mobilenetv3 (it's a TF Graph model)
+        if self.model_name == 'mobilenetv3':
             return self.model
         else:
             self.model = self.model.to(device)

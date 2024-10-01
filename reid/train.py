@@ -5,6 +5,7 @@ from typing import Dict, Optional, Tuple, Type, Union
 import numpy as np
 import numpy.ma as ma
 import torch
+import torchvision
 from reid.datasets.transforms import Transformations
 from reid.datasets.vehicle_id import VehicleID
 from reid.datasets.veri_776 import Veri776
@@ -87,6 +88,42 @@ class Trainer:
             self.running_id_loss = []
             self.running_metric_loss = []
             self.acc_list = []
+        else: # If we are testing, load the correct mappings for colors
+            if(type(self.car_classifier) == torchvision.models.efficientnet.EfficientNet):
+                # This is the mapping that comes out of the Color Model | EfficientNet
+                self.mapping = {
+                    0: 'yellow',
+                    1: 'orange',
+                    2: 'green',
+                    3: 'gray',
+                    4: 'red',
+                    5: 'blue',
+                    6: 'white',
+                    7: 'golden',
+                    8: 'brown',
+                    9: 'black',
+                    10: 'dark gray',
+                    11: 'purple',
+                    12: 'cyan'
+                }
+            else:
+                # Mapping of Spectrico model
+                self.mapping = {
+                    0: 'black',
+                    1: 'white',
+                    2: 'gray',
+                    3: 'silver',
+                    4: 'blue',
+                    5: 'red',
+                    6: 'green',
+                    7: 'brown',
+                    8: 'beige',
+                    9: 'golden',
+                    10: 'bordeaux',
+                    11: 'yellow',
+                    12: 'violet',
+                    13: 'orange'
+                }
 
         # Validation configurations
         self.re_ranking = self.val_configs.RE_RANKING
@@ -332,52 +369,43 @@ class Trainer:
                       f"Accuracy: {np.mean(self.acc_list):.4f} | "
                       f"LR: {self.scheduler.get_lr()[0]:.2e}")
 
-    def validate_color(self, img, color_id: torch.Tensor):
+    def validate_color(self, img: torch.Tensor, color_id: torch.Tensor):
 
-        mapping = {
-            0: 'black',
-            1: 'blue',
-            2: 'brown',
-            3: 'green',
-            4: 'gray',
-            5: 'orange',
-            6: 'pink',
-            7: 'purple',
-            8: 'red',
-            9: 'white',
-            10: 'yellow'
-        }
-
-        # Run inference on the color model | self.color_model.predict(image)
-        #color_predictions = self.car_classifier.color_classifier.predict(img)
-        color_predictions = self.car_classifier(img)
-
-        # convert from logits to probs
-        color_predictions = torch.nn.functional.softmax(color_predictions, dim=1)
-
-        # We need to decode the color predictions, which are in a format:
-        # [{'color': 'black', 'prob': '0.9999'}, ...]
-        # We need to convert this to a tensor of shape (batch_size, num_classes)
-        # where the color will be converted from a String ('black') to an Int () corresponding
-        # to the Veri-776 colors
-        color_predictions_tensor = torch.zeros((img.size(0), 1), dtype=torch.float32, device=self.device)
-        
+        # Initialize the color predictions tensor
+        color_predictions_tensor = torch.zeros((img.shape[0], 1), dtype=torch.float32, device=self.device)
         predicted_color_indices = []
 
-        # Iterate through the color predictions
+        # Run inference on the EfficientNet model
+        if(type(self.car_classifier) == torchvision.models.efficientnet.EfficientNet):
+            color_predictions = self.car_classifier(img)
+            color_predictions = torch.nn.functional.softmax(color_predictions, dim=1) # Convert from logits to probs
+        else: # Run inference on the MobileNetV3 (Spectrico) model
+            color_predictions = self.car_classifier.color_classifier.predict(img)
+
+        # We need to decode the color predictions, which are in a format:
+        # [{'color': 'black', 'prob': '0.9999'}, ...] for the Spectrico model
+        # or a tensor of shape (batch_size, num_classes) for the EfficientNet model
+        # In both cases, we need to convert this to a tensor of indices of the colors
         for i, color in enumerate(color_predictions):
-            #color_prediction = color[0]['color'].lower()
-            # We need to convert this color prediction back to the index of the color (list_color)
-            color_prediction = mapping[torch.argmax(color).item()]
+            if(type(self.car_classifier) != torchvision.models.efficientnet.EfficientNet):
+                color_prediction = color[0]['color'].lower()
+            else:
+                if type(color) == np.ndarray:
+                    color_prediction = self.mapping[np.argmax(color)]
+                else:
+                    color_prediction = self.mapping[torch.argmax(color).item()]
+
+            # Get the index of the color from the dataset and append it to the list
             predicted_index = self.dataset.get_color_index(color_prediction)
             predicted_color_indices.append(predicted_index)
             color_predictions_tensor[i][0] = predicted_index
         
         predicted_color_indices = np.array(predicted_color_indices)
-        actual_color_indices = color_id.detach().cpu().numpy()  # Assuming color_id is a tensor
+        actual_color_indices = color_id.detach().cpu().numpy() # Assuming color_id is a tensor
         
         # We have to remove the items which are -1 in the actual_color_indices
         # as well as the corresponding indices in the predicted_color_indices and color_predictions_tensor
+        # Otherwise, we will get an error when calculating the accuracy since the indices will not match
         mask = actual_color_indices != -1
         actual_color_indices = actual_color_indices[mask]
         predicted_color_indices = predicted_color_indices[mask]
@@ -440,22 +468,37 @@ class Trainer:
             color_accuracies = torch.tensor(color_accuracies)
             print(f"Color Accuracy: {torch.mean(color_accuracies).item():.4f}%")
 
-            # Before returning the accuracy, we would like to have some sort of confusion matrix
-            # where we can see the predictions and the actual color_id
-            # In this way, we can see if the model is confusing the colors with very slightly different colors
-            predictions_colors = np.concatenate([arr for arr in predictions_colors]).tolist()
-            ground_truth_colors = np.concatenate([arr for arr in ground_truth_colors]).tolist()
-            conf_matrix = confusion_matrix(ground_truth_colors, predictions_colors, labels=list(self.dataset.color_dict.keys()), normalize='true')
+            if self.test_configs.PRINT_CONFUSION_MATRIX:
+                # Before returning the accuracy, we would like to have some sort of confusion matrix
+                # where we can see the predictions and the actual color_id
+                # In this way, we can see if the model is confusing the colors with very slightly different colors
+                predictions_colors = np.concatenate([arr for arr in predictions_colors]).tolist()
+                ground_truth_colors = np.concatenate([arr for arr in ground_truth_colors]).tolist()
+                conf_matrix = confusion_matrix(ground_truth_colors, predictions_colors, labels=list(self.dataset.color_dict.keys()), normalize='true')
 
-            # Plot confusion matrix
-            plt.figure(figsize=(10, 8))
-            sns.heatmap(conf_matrix, annot=True, fmt=".2f", cmap="Blues",
-                        xticklabels=list(self.dataset.color_dict.values()),
-                        yticklabels=list(self.dataset.color_dict.values()))
-            plt.xlabel('Predicted Color')
-            plt.ylabel('True Color')
-            plt.title('Confusion Matrix of Color Predictions')
-            plt.show()
+                # Plot confusion matrix. Args are given based on the dataset
+                if (self.dataset.dataset_name == 'veri-wild'):
+                    fontsize = 12
+                    figsize = (15, 15)
+                    annot_kws_size = 14
+                else: # For other datasets (VeRi-776, VRU, VehicleID)
+                    fontsize = 9
+                    figsize = (10, 12)
+                    annot_kws_size = 9
+
+                plt.figure(figsize=figsize)
+                sns.heatmap(conf_matrix, annot=True, fmt=".2f", cmap="Blues",
+                            xticklabels=list(self.dataset.color_dict.values()),
+                            yticklabels=list(self.dataset.color_dict.values()),
+                            cbar_kws={'label': 'Color Scale'},
+                            annot_kws={"size": annot_kws_size}) # Increase font size of annotations
+                plt.xticks(rotation=45, fontsize=fontsize)  # Rotate x labels
+                plt.yticks(rotation=0, fontsize=fontsize)  # Adjust y-axis label rotation and font size
+                plt.xlabel('Predicted Color')
+                plt.ylabel('True Color')
+                plt.title('Confusion Matrix of Color Predictions')
+                plt.tight_layout()  # Adjust layout to fit labels better
+                plt.show()
 
         if 'reid' in metrics:
             distmat = euclidean_dist(query_feat, gallery_feat, self.use_amp, train=False)

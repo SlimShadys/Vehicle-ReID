@@ -44,6 +44,8 @@ _C.REID.MODEL.USE_STRIDE = True
 _C.REID.MODEL.USE_BOTTLENECK = True
 # -- Color Model Configuration
 _C.REID.COLOR_MODEL = ConfigNode()
+_C.REID.COLOR_MODEL.NAME = 'efficientnetv3' # "efficientnetv3" (our implementation) / "mobilenetv3" (this model is based on Spectrico's implementation)
+_C.REID.COLOR_MODEL.EFFICIENTNET_PRETRAINED_PATH = "./tracking/car-color-classifier-v2/EfficientNet-B3_loss-0.2941_acc-91.7665.pt"
 _C.REID.COLOR_MODEL.TOP_K = 3
 _C.REID.COLOR_MODEL.MODEL_FILE = "./tracking/car-color-classifier/models/model-weights-spectrico-car-colors-recognition-mobilenet_v3-224x224-180420.pb"
 _C.REID.COLOR_MODEL.LABEL_FILE = "./tracking/car-color-classifier/labels.txt"
@@ -117,6 +119,7 @@ _C.REID.TEST = ConfigNode()
 _C.REID.TEST.TESTING = True # Always set to False (except in config_test.yml)
 _C.REID.TEST.RUN_REID_METRICS = False
 _C.REID.TEST.RUN_COLOR_METRICS = True
+_C.REID.TEST.PRINT_CONFUSION_MATRIX = True # Only available if run_color_metrics is True
 _C.REID.TEST.NORMALIZE_EMBEDDINGS = True
 _C.REID.TEST.MODEL_VAL_PATH = "./reid/results/Test-14/model_ep-158_loss-0.0275.pth"
 _C.REID.TEST.PATH_IMG_1 = "data/test/honda_f.jpg"

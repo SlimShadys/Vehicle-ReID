@@ -253,18 +253,14 @@ def main(config, seed):
                                 pin_memory=True, drop_last=False)
 
         if run_color_metrics:
-            color_model = torch.load('best_model_epoch_3_l-0.2243_a-93.1636.pt')
-            color_model = color_model.to(device)
-            print("Color model loaded successfully!")
-
-            # print(f"Building color model...")
-            # model_builder = ModelBuilder(
-            #     model_name='color_model',
-            #     pretrained=pretrained,
-            #     num_classes=num_classes[dataset_name],
-            #     model_configs=config.REID.COLOR_MODEL
-            # )
-            # color_model = model_builder.move_to(device)
+            print(f"Building color model...")
+            model_builder = ModelBuilder(
+                model_name=config.REID.COLOR_MODEL.NAME,
+                pretrained=pretrained,
+                num_classes=num_classes[dataset_name],
+                model_configs=config.REID.COLOR_MODEL
+            )
+            color_model = model_builder.move_to(device)
         else:
             color_model = None
 

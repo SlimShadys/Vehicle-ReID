@@ -71,18 +71,19 @@ class ImageDataset(Dataset):
 
 # Variables
 device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
-model_name = 'EfficientNet-B3'
+model_name = 'EfficientNet-B3' # 'EfficientNet-B3' or 'EfficientNet-B5'
 batch_size = 16
 lr = 1e-3 * (batch_size / 32)
 epochs = 30
-num_workers = 0
+num_workers = 8
 data_path = './data'
+dataset_size = 100 # This means that we'll take only the 50% of the dataset
 
 augmentation_configs = {
-    'HEIGHT': 224,
-    'WIDTH': 224,
+    'HEIGHT': 320,
+    'WIDTH': 320,
     'RANDOM_HORIZONTAL_FLIP_PROB': 0.5,
-    'RANDOM_CROP': (224, 224),
+    'RANDOM_CROP': (320, 320),
     'RANDOM_ERASING_PROB': 0.0,
     'JITTER_BRIGHTNESS': 0.2,
     'JITTER_CONTRAST': 0.15,
@@ -163,6 +164,8 @@ for dataset in [dataset_veri776, dataset_veriwild]:
     # Update dataset after filtering and relabeling
     dataset.train, dataset.query, dataset.gallery = filtered_train, filtered_query, filtered_gallery
 
+pbar.close()
+
 # Print the percentage of removed entries
 lenv776_t_new = 100 - (len(dataset_veri776.train) / lenv776_t * 100)
 lenv776_q_new = 100 - (len(dataset_veri776.query) / lenv776_q * 100)
@@ -178,6 +181,16 @@ print(f"\t- Veri-Wild Dataset: {lenvw_t_new + lenvw_q_new + lenvw_g_new:.3f}% of
 
 # Transformations for the dataset
 transforms = Transformations(configs=augmentation_configs)
+
+# Reduce the dataset size if needed
+if dataset_size != None:
+    dataset_veri776.train = dataset_veri776.train[:int(len(dataset_veri776.train) * (dataset_size / 100))]
+    dataset_veri776.query = dataset_veri776.query[:int(len(dataset_veri776.query) * (dataset_size / 100))]
+    dataset_veri776.gallery = dataset_veri776.gallery[:int(len(dataset_veri776.gallery) * (dataset_size / 100))]
+    dataset_veriwild.train = dataset_veriwild.train[:int(len(dataset_veriwild.train) * (dataset_size / 100))]
+    dataset_veriwild.query = dataset_veriwild.query[:int(len(dataset_veriwild.query) * (dataset_size / 100))]
+    dataset_veriwild.gallery = dataset_veriwild.gallery[:int(len(dataset_veriwild.gallery) * (dataset_size / 100))]
+    print(f"Dataset size filtered at {dataset_size}%")
 
 # Create the train and validation datasets
 train_set = ImageDataset(data=dataset_veri776.train + dataset_veriwild.train,
@@ -223,7 +236,7 @@ for param in model.parameters():
     param.requires_grad = True
 
 # Modify classifier to match the number of classes
-linear_layer = nn.Linear(in_features=model._fc.in_features,
+linear_layer = nn.Linear(in_features=model.classifier[1].in_features,
                             out_features=len(reverse_color_dict),
                             bias=True)
 linear_layer.apply(weights_init_classifier)

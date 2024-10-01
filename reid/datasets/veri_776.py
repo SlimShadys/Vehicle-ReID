@@ -18,7 +18,8 @@ class Veri776():
         with open(os.path.join(self.data_path, 'list_color.txt'), 'r') as file:
             for line in file:
                 index, color = line.strip().split(' ', 1)
-                self.color_dict[int(index)] = color.lower()
+                index = int(index) - 1 # Subtract 1 to start from 0
+                self.color_dict[index] = color.lower()
 
         # Directories
         self.train_dir = os.path.join(self.data_path, 'image_train')

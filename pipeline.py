@@ -12,6 +12,9 @@
 #   -> Filter out the frames based on the color                                 -> Done
 # - Run the ReID model on the remaining frames                                         
 
+# fare if per scegliere se fare validate color con efficientnet oppure mobilenet
+
+
 import argparse
 
 import cv2
