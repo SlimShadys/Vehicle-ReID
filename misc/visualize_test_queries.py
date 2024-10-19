@@ -16,8 +16,8 @@ from tqdm import tqdm
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(SCRIPT_DIR))
 
-from dataset import DatasetBuilder
-from model import ModelBuilder
+from reid.dataset import DatasetBuilder
+from reid.model import ModelBuilder
 from torch.utils.data import DataLoader
 
 # ============= FUNCTIONS =============

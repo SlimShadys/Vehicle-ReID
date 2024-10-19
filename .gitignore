@@ -7,16 +7,20 @@ gms/*
 # Ignore results for now
 reid/results/*
 
-# Ignore tracking example video and YOLO models
+# Ignore tracking example videos, tracking models and YOLO models
 tracking/video/*
 tracking/output/*
-tracking/__pycache__/*
-tracking/car-color-classifier/__pycache__/*
-tracking/car-color-classifier-v2/__pycache__/*
+tracking/car-color-classifier/Models/*
 yolov*.pt
+
+# Ignore Bounding Boxes and Plots
+tracking/bounding_boxes/*
+tracking/car-color-classifier/Plots/*
 
 # Ignore python cache files
 __pycache__/*
+db/__pycache__/*
+graph/__pycache__/*
 misc/__pycache__/*
 reid/__pycache__/*
 reid/datasets/__pycache__/*
@@ -24,6 +28,8 @@ reid/losses/__pycache__/*
 reid/models/__pycache__/*
 reid/results/__pycache__/*
 reid/training/__pycache__/*
+tracking/__pycache__/*
+tracking/car-color-classifier/__pycache__/*
 
 # Ignore .mat files for now
 *.mat

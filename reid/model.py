@@ -1,8 +1,7 @@
 import torch.nn as nn
-import torch
 from reid.models.layers import Bottleneck_IBN
 from reid.models.resnet import ResNet, ResNet_IBN
-from reid.models.color_model import CarClassifier
+from reid.models.color_model import SVM, EfficientNet
 
 resnet_urls = {
     'resnet18': "https://download.pytorch.org/models/resnet18-f37072fd.pth",
@@ -15,20 +14,25 @@ resnet_urls = {
 }
 
 class ModelBuilder:
-    def __init__(self, model_name='resnet50', pretrained=True, num_classes=1000, model_configs=None):
+    def __init__(self, model_name='resnet50', pretrained=True, num_classes=1000, model_configs=None, device='cuda'):
         self.model_name = model_name.lower()
         self.pretrained = pretrained
         self.num_classes = num_classes
         self.model_configs = model_configs or {}
+        self.device = device
 
         # Define the various model builders
         # - resnet  : ResNet family
         # - vit     : Vision Transformer (ViT)
+        # - efficientnetb3 : EfficientNet-B3
+        # - efficientnetb5 : EfficientNet-B5
+        # - svm     : Support Vector Machine (SVM)
         self.model_builders = {
             'resnet': self.build_resnet,
             'vit': self.build_vit,
-            'efficientnetv3': self.build_color_model,
-            'mobilenetv3': self.build_color_model,
+            'efficientnet-b3': self.build_color_model,
+            'efficientnet-b5': self.build_color_model,
+            'svm': self.build_color_model,
         }
 
         # Supported ResNet models
@@ -83,18 +87,18 @@ class ModelBuilder:
         raise NotImplementedError("ViT model is not implemented yet")
 
     def build_color_model(self):
-        if self.model_name == 'efficientnetv3':
-            return torch.load(self.model_configs.EFFICIENTNET_PRETRAINED_PATH)
-        elif self.model_name == 'mobilenetv3':
-            return CarClassifier(configs=self.model_configs)
-
-    def move_to(self, device):
-        # No Torch CUDA support for mobilenetv3 (it's a TF Graph model)
-        if self.model_name == 'mobilenetv3':
-            return self.model
+        if self.model_name == 'efficientnet-b3' or self.model_name == 'efficientnet-b5':
+            return EfficientNet(configs=self.model_configs, device=self.device)
+        elif self.model_name == 'svm':
+            return SVM(configs=self.model_configs)
         else:
-            self.model = self.model.to(device)
-        return self.model
+            raise ValueError(f"Unsupported color model: {self.model_name}")
+        
+    def move_to(self, device):
+        if isinstance(self.model, nn.Module) or isinstance(self.model, EfficientNet):
+            return self.model.to(device=device)
+        else:
+            return self.model
 
     def get_number_trainable_parameters(self):
         return sum(p.numel() for p in self.model.parameters() if p.requires_grad)

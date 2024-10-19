@@ -17,7 +17,7 @@ from reid.datasets.transforms import Transformations
 from misc.utils import euclidean_dist, read_image
 from reid.model import ModelBuilder
 from torch.utils.data import DataLoader
-from reid.train import Trainer
+from reid.training.trainer import Trainer
 
 def set_seed(seed):
     random.seed(seed)
@@ -68,7 +68,7 @@ def compute_two_images_similarity(model, device, similarity, normalize_embedding
 
         return distance
 
-def compute_multiple_images_similarity(model, device, similarity, normalize_embeddings, val_transform):
+def compute_multiple_images_similarity(model, device, similarity_method, normalize_embeddings, val_transform):
     directory = os.path.join('data', 'test')
     images = []
     for filename in os.listdir(directory):
@@ -90,9 +90,9 @@ def compute_multiple_images_similarity(model, device, similarity, normalize_embe
         for j in range(i+1, n):  # Only compute upper triangle
             
             # Calculate the similarity between the embeddings
-            if similarity == 'euclidean':
+            if similarity_method == 'euclidean':
                 similarity = euclidean_dist(embeddings[i].unsqueeze(0), embeddings[j].unsqueeze(0), train=False)
-            elif similarity == 'cosine':
+            elif similarity_method == 'cosine':
                 similarity = torch.nn.functional.cosine_similarity(embeddings[i].unsqueeze(0), embeddings[j].unsqueeze(0)).mean().item()
             
             # Since Matrix is symmetric, we can set both values at the same time
@@ -147,6 +147,7 @@ def main(config, seed):
     misc_configs = config.MISC
     dataset_configs = config.REID.DATASET
     model_configs = config.REID.MODEL
+    color_configs = config.REID.COLOR_MODEL
     augmentation_configs = config.REID.AUGMENTATION
     val_configs = config.REID.VALIDATION
     test_configs = config.REID.TEST
@@ -194,7 +195,8 @@ def main(config, seed):
             model_name=model_name,
             pretrained=pretrained,
             num_classes=num_classes[dataset_name],
-            model_configs=model_configs
+            model_configs=model_configs,
+            device=device
         )
 
         # Get the model and move it to the device
@@ -253,14 +255,42 @@ def main(config, seed):
                                 pin_memory=True, drop_last=False)
 
         if run_color_metrics:
-            print(f"Building color model...")
+            # Build the color model
+            print(f"Loading color model from {color_configs.NAME}...")
             model_builder = ModelBuilder(
-                model_name=config.REID.COLOR_MODEL.NAME,
+                model_name=color_configs.NAME,
                 pretrained=pretrained,
                 num_classes=num_classes[dataset_name],
-                model_configs=config.REID.COLOR_MODEL
+                model_configs=color_configs,
+                device=device
             )
             color_model = model_builder.move_to(device)
+            print(f"Successfully loaded color model from {color_configs.NAME}!")
+
+            if ('svm' in color_configs.NAME):
+                print(f"Building {model_name} model for SVM Color Recognition...")
+                model_builder = ModelBuilder(
+                    model_name=model_name,
+                    pretrained=pretrained,
+                    num_classes=num_classes[dataset_name],
+                    model_configs=model_configs,
+                    device=device
+                )
+
+                # Get the model and move it to the device
+                model = model_builder.move_to(device)
+
+                # Load parameters from a .pth file
+                if (model_val_path is not None):
+                    print("Loading model parameters from file...")
+                    if ('ibn' in model_name):
+                        model.load_param(model_val_path)
+                    else:
+                        checkpoint = torch.load(model_val_path, map_location=device)
+                        model.load_state_dict(checkpoint['model'])
+                    print(f"Successfully loaded model parameters from file: {model_val_path}")
+
+                model.eval()    
         else:
             color_model = None
 

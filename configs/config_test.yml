@@ -8,7 +8,7 @@ MISC:
 REID:
   DATASET:
     DATA_PATH: "./data"
-    DATASET_NAME: "veri_wild" # veri_776 / veri_wild / vehicle_id / vru
+    DATASET_NAME: "veri_776" # veri_776 / veri_wild / vehicle_id / vru
     DATASET_SIZE: "small" # small / medium / large
     SAMPLER_TYPE: "random" # random / balanced / None
     NUM_INSTANCES: 6 # Only to be adjusted if sampler_type is either "random" or "balanced"
@@ -23,14 +23,9 @@ REID:
 
   # === COLOR CLASSIFIER CONFIGURATION ===
   COLOR_MODEL:
-    NAME: "mobilenetv3" # "efficientnetv3" (our implementation) / "mobilenetv3" (this model is based on Spectrico's implementation)
-    EFFICIENTNET_PRETRAINED_PATH: "./tracking/car-color-classifier-v2/EfficientNet-B5_loss-0.2239_acc-94.0872.pt"
-    TOP_K: 3
-    MODEL_FILE: "./tracking/car-color-classifier/models/model-weights-spectrico-car-colors-recognition-mobilenet_v3-224x224-180420.pb"
-    LABEL_FILE: "./tracking/car-color-classifier/labels.txt" # color_classifier
-    INPUT_LAYER: "input_1"
-    OUTPUT_LAYER: "Predictions/Softmax/Softmax"
-    INPUT_SIZE: [224, 224]
+    NAME: "efficientnet-b5" # "svm" / "efficientnet-b3" / "efficientnet-b5" (our implementation)
+    PRETRAINED_PATH: "./tracking/car-color-classifier/Models/EfficientNet-B5_loss-0.2239_acc-94.0872.pt"
+    #PRETRAINED_PATH: "./tracking/car-color-classifier/Models/svm_classifier_v3.pkl"
 
   # === VALIDATION CONFIGURATION ===
   VALIDATION:
@@ -49,4 +44,4 @@ REID:
     PATH_IMG_2: "./data/test/honda_f_2.jpg"
     STACK_IMAGES: True # Stack all the images to create a NxN matrix of similarity scores. Only available if run_reid_metrics is False
     SIMILARITY: "cosine" # "euclidean" / "cosine"
-    MODEL_VAL_PATH: "./reid/results/Test-19/model_ep-136_loss-5.2181.pth"
+    MODEL_VAL_PATH: "./reid/results/Test-14/model_ep-158_loss-0.0275.pth"

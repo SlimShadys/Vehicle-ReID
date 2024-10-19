@@ -1,15 +1,132 @@
 import os
 import random
 import shutil
+import zlib
 
+import bson
 import cv2
 import numpy as np
-import tensorflow.compat.v1 as tf  # TensorFlow 2.0
 import torch
 import torch.nn as nn
 import torch.utils.model_zoo as model_zoo
 from PIL import Image
 from tqdm import tqdm
+
+# Retrieve and decompress the data from MongoDB
+def decompress_img(compressed_data, shape, dtype):
+    decompressed_data = zlib.decompress(compressed_data)
+    array = np.frombuffer(decompressed_data, dtype=dtype)  # Convert bytes back to NumPy array
+    return array.reshape(shape)  # Reshape to original dimensions
+
+# Compress the image data before storing in MongoDB
+def compress_img(img):
+    compressed_data = zlib.compress(img.tobytes())
+    compressed_data = bson.Binary(compressed_data)
+    return compressed_data
+
+def is_incomplete(box, min_box_size, frame_width, frame_height, margin=50, center_threshold=0.2):
+    x1, y1, x2, y2 = box
+    box_width = x2 - x1
+    box_height = y2 - y1
+    
+    # Center of the bounding box
+    box_center_x = (x1 + x2) / 2
+    box_center_y = (y1 + y2) / 2
+    
+    # Define the central region of the frame
+    center_x_min = frame_width * (center_threshold / 2)
+    center_x_max = frame_width * (1 - center_threshold / 2)
+    center_y_min = frame_height * (center_threshold / 2)
+    center_y_max = frame_height * (1 - center_threshold / 2)
+    
+    # Check if the bounding box is smaller than the minimum size
+    if (box_width < min_box_size or box_height < min_box_size):
+        return True
+    
+    # Check if the bounding box extends beyond the frame boundaries
+    if (x1 < margin or y1 < margin or x2 > (frame_width - margin) or y2 > (frame_height - margin)):
+        return True
+    
+    # # Check if the bounding box is near the center
+    if not (box_center_x > center_x_min and box_center_x < center_x_max and box_center_y > center_y_min and box_center_y < center_y_max):
+        return True
+    
+    return False
+
+# Function to load the middle frame of a vehicle's bounding boxes
+def load_middle_frame(bbox_output_path, vehicle_id, camera_id):
+    vehicle_id = str(vehicle_id).split('_V')[1]  # Extract the vehicle ID from the unique ID
+    vehicle_dir = os.path.join(bbox_output_path, f'Camera-{camera_id}', str(vehicle_id))
+    frame_files = sorted(os.listdir(vehicle_dir))
+    if vehicle_id == '4':
+        frame_path = os.path.join(vehicle_dir, frame_files[0])
+    else:
+        middle_frame_index = len(frame_files) // 2  # Pick the middle frame
+        frame_path = os.path.join(vehicle_dir, frame_files[middle_frame_index])
+    img = Image.open(frame_path).convert("RGB")
+    img = img.resize((128, 128))
+    return img
+
+def create_mask(image, image_path):
+    # Extract name of the image file
+    image_name = os.path.basename(image_path).split('.')[0]
+
+    # Extract directory of the image file
+    image_dir = os.path.dirname(image_path)
+
+    # Convert the image from BGR to RGB
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+    # Create an empty mask with the same height and width as the image
+    mask = np.zeros(image.shape[:2], dtype=np.uint8)
+
+    # List to store points of the polygon
+    roi_points = []
+
+    # Mouse callback function to capture points
+    def select_points(event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            roi_points.append((x, y))
+            cv2.circle(image, (x, y), 5, (0, 255, 0), -1)  # Draw a small green circle where you click
+            cv2.namedWindow("Select ROI", cv2.WINDOW_NORMAL)
+            cv2.imshow("Select ROI", image)
+
+    # Show the image and set the mouse callback
+    cv2.namedWindow("Select ROI", cv2.WINDOW_NORMAL)
+    cv2.imshow("Select ROI", image)
+    cv2.setMouseCallback("Select ROI", select_points)
+
+    print("Select the ROI by clicking points, and press 'Enter' when done. Press 'Esc' to cancel.")
+
+    # Wait for the user to press a key
+    key = cv2.waitKey(0)
+
+    # Close the window
+    cv2.destroyAllWindows()
+
+    # If 'Esc' is pressed (key == 27), return None or raise an exception if no points were drawn
+    if key == 27:
+        if len(roi_points) < 2:
+            raise Exception("Esc pressed or not enough points selected. Operation canceled")
+
+    # If there are enough points, create a polygon mask
+    if len(roi_points) > 2:
+        roi_polygon = np.array([roi_points], dtype=np.int32)
+        cv2.fillPoly(mask, roi_polygon, 255)  # Fill the polygon on the mask with white
+
+        # Save the mask if needed
+        mask_path = os.path.join(image_dir, 'roi_masks', f"{image_name}_roi_mask.png")
+        cv2.imwrite(mask_path, mask)
+        print(f"Mask saved at: {mask_path}")
+
+        # You can also display the mask
+        cv2.namedWindow("ROI Mask", cv2.WINDOW_NORMAL)
+        cv2.imshow("ROI Mask", mask)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+        return mask
+    else:
+        raise Exception("Not enough points were selected to form a polygon.")
 
 def compute_iou(box1, box2):
     x1, y1, x2, y2 = box1
@@ -417,17 +534,6 @@ def re_ranking(probFea, galFea, k1, k2, lambda_value, local_distmat=None, only_l
     final_dist = final_dist[:query_num, query_num:]
     return final_dist
 
-def load_graph(model_file):
-  graph = tf.Graph()
-  graph_def = tf.GraphDef()
-
-  with open(model_file, "rb") as f:
-    graph_def.ParseFromString(f.read())
-  with graph.as_default():
-    tf.import_graph_def(graph_def)
-
-  return graph
-
 def load_labels(label_file):
     label = []
     with open(label_file, "r", encoding='cp1251') as ins:
@@ -435,46 +541,6 @@ def load_labels(label_file):
             label.append(line.rstrip())
 
     return label
-
-def resizeAndPad(img, size, padColor=0):
-    h, w = img.shape[:2]
-    sh, sw = size
-
-    # interpolation method
-    if h > sh or w > sw: # shrinking image
-        interp = cv2.INTER_AREA
-    else: # stretching image
-        interp = cv2.INTER_CUBIC
-
-    # aspect ratio of image
-    aspect = w/h  # if on Python 2, you might need to cast as a float: float(w)/h
-
-    # compute scaling and pad sizing
-    if aspect > 1: # horizontal image
-        new_w = sw
-        new_h = np.round(new_w/aspect).astype(int)
-        pad_vert = (sh-new_h)/2
-        pad_top, pad_bot = np.floor(pad_vert).astype(int), np.ceil(pad_vert).astype(int)
-        pad_left, pad_right = 0, 0
-    elif aspect < 1: # vertical image
-        new_h = sh
-        new_w = np.round(new_h*aspect).astype(int)
-        pad_horz = (sw-new_w)/2
-        pad_left, pad_right = np.floor(pad_horz).astype(int), np.ceil(pad_horz).astype(int)
-        pad_top, pad_bot = 0, 0
-    else: # square image
-        new_h, new_w = sh, sw
-        pad_left, pad_right, pad_top, pad_bot = 0, 0, 0, 0
-
-    # set pad color
-    if len(img.shape) == 3 and not isinstance(padColor, (list, tuple, np.ndarray)): # color image but only one color provided
-        padColor = [padColor]*3
-
-    # scale and pad
-    scaled_img = cv2.resize(img, (new_w, new_h), interpolation=interp)
-    scaled_img = cv2.copyMakeBorder(scaled_img, pad_top, pad_bot, pad_left, pad_right, borderType=cv2.BORDER_CONSTANT, value=padColor)
-
-    return scaled_img
 
 def set_seed(seed):
     random.seed(seed)
