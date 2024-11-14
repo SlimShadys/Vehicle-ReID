@@ -1,0 +1,6 @@
+MTSC:
+  camera_6:
+    path: './data/AICity22_Track1_MTMC_Tracking/validation/S02/c006/vdo.avi'
+    roi: './data/AICity22_Track1_MTMC_Tracking/validation/S02/c006/roi.jpg'
+    info: './data/AICity22_Track1_MTMC_Tracking/validation/S02/c006/c006_info.json'
+    gt: './data/AICity22_Track1_MTMC_Tracking/validation/S02/c006/gt/gt.txt'

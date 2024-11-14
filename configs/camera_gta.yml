@@ -1,0 +1,6 @@
+MTSC:
+  camera_1:
+    path: './data/video/MC-GTA/cam-1/'
+    roi: './data/video/roi_masks/video_MC-GTA_cam-1_roi_mask.png'
+    info: './data/video/info/MC-GTA_cam-1.json'
+    gt: './data/video/MC-GTA/cam-1/coords_cam_mod_updated.txt'

@@ -1,16 +1,69 @@
+from collections import defaultdict
 import os
 import random
+import re
 import shutil
+import tarfile
+import zipfile
 import zlib
 
 import bson
 import cv2
 import numpy as np
+import pandas as pd
+import requests
 import torch
 import torch.nn as nn
 import torch.utils.model_zoo as model_zoo
 from PIL import Image
 from tqdm import tqdm
+
+from graph.model import GraphEngine
+from sklearn.metrics.pairwise import cosine_similarity
+
+# Custom sort key function to extract the numeric part of the ID
+def extract_numeric_id(vehicle_id):
+    # Find the numeric part in the vehicle ID (after 'V')
+    if type(vehicle_id) == int:
+        return vehicle_id
+    else:
+        match = re.search(r'V(\d+)', vehicle_id)
+        if match:
+            return int(match.group(1))
+        else:
+            raise ValueError(f"Invalid vehicle ID: {vehicle_id}")
+        
+# Define a function to normalize using NumPy
+def normalize_np(vector):
+    norm = np.linalg.norm(vector, ord=2)  # L2 normalization
+    if norm == 0:  # Handle edge case where norm is zero
+        return vector
+    return vector / norm
+
+# Define the NumPy-based cosine similarity function
+def cosine_similarity_np(vec1, vec2):
+    norm1 = np.linalg.norm(vec1)
+    norm2 = np.linalg.norm(vec2)
+    if norm1 == 0 or norm2 == 0:
+        return 0  # Handle edge case where one of the vectors has zero magnitude
+    return np.dot(vec1, vec2) / (norm1 * norm2) 
+
+def sample_trajectory_frames(frames, min_samples=10, max_samples=50):
+    if len(frames) <= max_samples:
+        return frames
+    
+    if len(frames) < min_samples:
+        return []
+
+    # Always include the first 3 and last 3 frames
+    num_middle_samples = max_samples - 6  # Subtract the first 3 and last 3 frames
+    # Generate indices for middle frames
+    middle_indices = np.linspace(3, len(frames) - 4, num=num_middle_samples, dtype=int)
+    # Combine all indices to keep
+    indices_to_keep = [0, 1, 2] + middle_indices.tolist() + [len(frames) - 3, len(frames) - 2, len(frames) - 1]
+    sampled_frames = [frames[i] for i in indices_to_keep]
+
+    return sampled_frames
 
 # Retrieve and decompress the data from MongoDB
 def decompress_img(compressed_data, shape, dtype):
@@ -68,11 +121,32 @@ def load_middle_frame(bbox_output_path, vehicle_id, camera_id):
     return img
 
 def create_mask(image, image_path):
-    # Extract name of the image file
-    image_name = os.path.basename(image_path).split('.')[0]
 
-    # Extract directory of the image file
-    image_dir = os.path.dirname(image_path)
+    image_dir = os.path.join('data', 'video', 'roi_masks')
+
+    # Convert path to OS separator
+    image_path = os.path.join(*image_path.split('/'))
+
+    # Check if the image_path is a directory (frame directory) or a video file
+    if os.path.isdir(image_path):
+        # Try to split the directory name to extract the camera ID
+        try:
+            # Split the path into components
+            path_parts = image_path.split(os.sep)
+
+            # Remove "data" and any empty strings, then join remaining parts with '_'
+            filtered_parts = [part for part in path_parts if part and part != 'data' and part != '.']
+            formatted_path = '_'.join(filtered_parts)
+
+            # Remove any trailing slashes if needed
+            frame_dir = formatted_path.rstrip('/')
+        except:
+            frame_dir = 'unknown'
+
+        image_name = frame_dir
+    else:
+        # Extract name of the image file
+        image_name = os.path.basename(image_path).split('.')[0]
 
     # Convert the image from BGR to RGB
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -114,12 +188,16 @@ def create_mask(image, image_path):
         roi_polygon = np.array([roi_points], dtype=np.int32)
         cv2.fillPoly(mask, roi_polygon, 255)  # Fill the polygon on the mask with white
 
-        # Save the mask if needed
-        mask_path = os.path.join(image_dir, 'roi_masks', f"{image_name}_roi_mask.png")
+        # Ensure the 'roi_masks' directory exists
+        roi_mask_dir = image_dir
+        os.makedirs(roi_mask_dir, exist_ok=True)
+
+        # Save the mask
+        mask_path = os.path.join(roi_mask_dir, f"{image_name}_roi_mask.png")
         cv2.imwrite(mask_path, mask)
         print(f"Mask saved at: {mask_path}")
 
-        # You can also display the mask
+        # Display the mask
         cv2.namedWindow("ROI Mask", cv2.WINDOW_NORMAL)
         cv2.imshow("ROI Mask", mask)
         cv2.waitKey(0)
@@ -552,3 +630,262 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     print("Correctly set the seed to:", seed)
+
+# Example function to calculate direction vector from centroid positions
+def calculate_direction_vector(trajectory_frames):
+    incremental_vectors = []
+
+    # Calculate the centroid for each frame in the trajectory
+    centroids = []
+    for frame in trajectory_frames:
+        x_center = frame[0] + (frame[2] - frame[0]) / 2
+        y_center = frame[1] + (frame[3] - frame[1]) / 2
+        centroids.append(np.array([x_center, y_center]))
+
+    # Calculate direction vectors between consecutive centroids
+    for i in range(1, len(centroids)):
+        incremental_vector = centroids[i] - centroids[i - 1]
+        # Normalize the incremental vector and add it to the list
+        if np.linalg.norm(incremental_vector) != 0:
+            incremental_vectors.append(incremental_vector / np.linalg.norm(incremental_vector))
+
+    # Compute the average direction vector
+    if incremental_vectors:
+        avg_direction_vector = np.mean(incremental_vectors, axis=0)
+        return avg_direction_vector / np.linalg.norm(avg_direction_vector)
+    else:
+        # Fallback if we have only one frame (shouldn't happen in your tracking scenario)
+        return np.array([0, 0])  # Default direction if we can't calculate a vector
+
+def remove_below_threshold(df, threshold=0.5, method='mean'):
+    rows_to_remove = []
+
+    # Iterate over each query row in the DataFrame
+    for _, query_name in enumerate(df.index):
+
+        # Extract the camera and vehicle from the query name
+        query_cam, query_vehicle = query_name.split('_')[1], query_name.split('_')[2]
+
+        # Get the row for the current query
+        query_similarities = df.loc[query_name, :]
+
+        # Initialize a flag to check if we should remove the query's trajectory
+        remove_trajectory = True
+
+        # Iterate over all gallery trajectories
+        for gallery_vehicle in set(col.split('_')[1] + '_' + col.split('_')[2] for col in df.columns):
+            # Extract cam from gallery_vehicle
+            gallery_cam = gallery_vehicle.split('_')[0]
+
+            if query_cam == gallery_cam:
+                continue  # Skip the same camera
+
+            # Get all columns that belong to the same gallery vehicle (trajectory)
+            gallery_columns = [col for col in df.columns if gallery_vehicle in col]
+
+            # Compute the similarity for the current gallery trajectory
+            if method == 'mean':
+                # Calculate mean similarity for the gallery trajectory
+                mean_similarity = query_similarities[gallery_columns].mean()
+                if mean_similarity >= threshold:
+                    remove_trajectory = False  # If any gallery trajectory is above the threshold, do not remove
+                    break  # Exit the loop since one gallery passed the threshold
+            elif method == 'individual':
+                # Check each individual frame
+                if any(query_similarities[col] >= threshold for col in gallery_columns):
+                    remove_trajectory = False  # If any frame in the gallery trajectory is above the threshold, do not remove
+                    break  # Exit the loop
+            else:
+                raise ValueError(f"Invalid similarity method: {method}")
+            
+        # If the trajectory should be removed, store the vehicle name
+        if remove_trajectory:
+            rows_to_remove.append(f'{query_cam}_{query_vehicle}')  # Store full trajectory name
+
+    # Remove rows that match any vehicle in rows_to_remove
+    for row in rows_to_remove:
+        df.drop(index=[idx for idx in df.index if row in idx], inplace=True)
+
+    return df, rows_to_remove
+
+def compare_trajectories(reid_DB, df, threshold=0.7, method='mean') -> tuple[dict, GraphEngine]:
+    traj = {}
+    G_TRAJ = GraphEngine()
+
+    # Iterate over each query trajectory (rows in DataFrame)
+    for query_idx, query_name in enumerate(df.index):
+        # Extract camera and vehicle from the query name
+        query_cam, query_vehicle = query_name.split('_')[1], query_name.split('_')[2]
+        q_vid = query_cam + '_' + query_vehicle
+
+        # Add q_vid to the Graph
+        G_TRAJ.add_node(q_vid)
+
+        # Extract bounding boxes from the query trajectory
+        q_trajectory = reid_DB.get_vehicle_single_trajectory(query_cam + '_' + query_vehicle)
+        q_start_t = q_trajectory['start_time']
+        q_end_t = q_trajectory['end_time']
+        q_frames = [v[3] for _, v in q_trajectory['trajectory_data'].items()] # We are interested in the BBs only
+
+        # array([x, y])
+        # X represents how much of the vehicle’s movement is in the horizontal direction
+        #   - Rightward if positive, leftward if negative
+        # Y represents how much of the vehicle’s movement is in the vertical direction
+        #   - Upward if positive, downward if negative
+        query_direction_vector = calculate_direction_vector(q_frames)
+
+        # Get the row for the current query
+        query_similarities = df.loc[query_name, :]
+
+        # Add the trajectory to the dictionary since it meets the threshold criteria
+        if (query_name, q_start_t) not in traj:
+            traj[((query_name, q_start_t))] = []
+
+        # Iterate over all gallery trajectories
+        for gallery_vehicle in set(col.split('_')[1] + '_' + col.split('_')[2] for col in df.columns):
+            # Extract cam from gallery_vehicle
+            gallery_cam = gallery_vehicle.split('_')[0]
+
+            is_similar = False
+
+            # Useless to check for same cameras, hence continue
+            if gallery_cam == query_cam:
+                continue
+            else:
+                # Extract bounding boxes from the gallery trajectory
+                g_trajectory = reid_DB.get_vehicle_single_trajectory(gallery_vehicle)
+                g_start_t = g_trajectory['start_time']
+                g_end_t = g_trajectory['end_time']
+                g_frames = [v[3] for _, v in g_trajectory['trajectory_data'].items()] # We are interested in the BBs only
+
+                gallery_direction_vector = calculate_direction_vector(g_frames)
+            
+            # Get all columns that belong to the same gallery vehicle (trajectory)
+            gallery_columns = [col for col in df.columns if gallery_vehicle in col]
+            
+            if method == 'mean':
+                # Calculate the mean similarity for the gallery trajectory
+                mean_similarity = query_similarities[gallery_columns].mean()
+                if mean_similarity >= threshold:
+                    is_similar = True
+            elif method == 'individual':
+                # Check each individual frame
+                for col in gallery_columns:
+                    if query_similarities[col] >= 0.82:
+                        is_similar = True
+                        break  # No need to continue with other frames if one already passed the threshold
+            else:
+                raise ValueError(f"Invalid similarity method: {method}")
+
+            if is_similar:
+                # CHECK FOR DIRECTION!
+                direction_similarity = cosine_similarity(query_direction_vector.reshape(1, -1), gallery_direction_vector.reshape(1, -1)).item()
+
+                # if direction_similarity >= 0.70:
+
+                # ===================== #
+                #  CHECK FOR TIMESTAMP! #
+                # ===================== #
+                # If the difference is less than 5 seconds, we can consider them as the same trajectory
+                # If the difference is greater than 5 seconds, we can consider them as different trajectories
+                # We can use the start_time and end_time of the trajectory to determine this
+                time_difference = get_camera_time_difference(reid_DB,
+                                                             int(query_cam.split('CAM')[-1]),
+                                                             int(gallery_cam.split('CAM')[-1]))
+                real_diff = time_difference * 0.01 + 5.00 # For testing purposes
+                if abs(q_start_t - g_start_t) > real_diff:
+                    continue
+                else:
+                    g_vid = gallery_vehicle
+                    G_TRAJ.add_node(g_vid)
+                    G_TRAJ.add_edge(q_vid, g_vid, weight=mean_similarity + direction_similarity)
+                    traj[(query_name, q_start_t)].append({gallery_vehicle: (mean_similarity, g_start_t)})
+                    print(f"Trajectory Q{query_cam}_{query_vehicle} is similar to Trajectory G_{gallery_vehicle} (Mean Similarity: {mean_similarity:.2f}, Direction Similarity: {direction_similarity:.2f})")
+
+        print("===============================================")
+
+    return traj, G_TRAJ
+
+# Get the time difference between two cameras
+def get_camera_time_difference(reid_DB, q_cam, g_cam):
+    scales = {(0, 1): 0.803, (1, 0): 1.246}  # 1.246 is the reciprocal of 0.803, for reverse direction
+    offsets = {(0, 1): 2.76, (1, 0): -2.76}  # Negative offset for reverse direction
+
+    avg_car_speed = 30              # Average car speed in mph
+    speed = avg_car_speed * 0.44704 # avg_car_speed * mph_to_secs
+
+    db_q_cam = reid_DB.get_camera(q_cam)
+    db_g_cam = reid_DB.get_camera(g_cam)
+
+    if db_q_cam['location'] == 'GTA-V' and db_g_cam['location'] == 'GTA-V':
+        distance = calculate_distance_3d((db_q_cam['coordinates'][0], db_q_cam['coordinates'][1]),
+                                        (db_g_cam['coordinates'][0], db_g_cam['coordinates'][1]),
+                                        use_z=False)
+    else:
+        distance = haversine_distance((db_q_cam['coordinates'][0], db_q_cam['coordinates'][1]),
+                                      (db_g_cam['coordinates'][0], db_g_cam['coordinates'][1]))
+
+    # Calculate the base time difference based on distance and speed
+    base_time_difference = distance / speed
+
+    # Retrieve scale and offset for the camera pair
+    scale = scales[(q_cam, g_cam)]
+    offset = offsets[(q_cam, g_cam)]
+
+    # Apply scale and offset
+    adjusted_time_difference = (base_time_difference * scale)
+
+    return adjusted_time_difference
+
+def get_driving_distance(start_latitude, start_longitude, end_latitude, end_longitude):
+    """
+    function to get driving distance in meters and travel time in seconds from OSM API
+    """
+    
+    url = f"http://router.project-osrm.org/route/v1/driving/{start_longitude},{start_latitude};{end_longitude},{end_latitude}?overview=false"
+    response = requests.get(url).json()
+    distance = response.get('routes', [])[0].get('distance')
+    time = response.get('routes', [])[0].get('duration')
+    return distance, time
+
+def calculate_iou(box1, box2):
+    """Calculate Intersection over Union (IoU) between two bounding boxes.
+    box format: [x_center, y_center, width, height]
+    """
+    x1_min, y1_min = box1[0] - box1[2] / 2, box1[1] - box1[3] / 2
+    x1_max, y1_max = box1[0] + box1[2] / 2, box1[1] + box1[3] / 2
+    x2_min, y2_min = box2[0] - box2[2] / 2, box2[1] - box2[3] / 2
+    x2_max, y2_max = box2[0] + box2[2] / 2, box2[1] + box2[3] / 2
+
+    inter_x_min = max(x1_min, x2_min)
+    inter_y_min = max(y1_min, y2_min)
+    inter_x_max = min(x1_max, x2_max)
+    inter_y_max = min(y1_max, y2_max)
+
+    if inter_x_min >= inter_x_max or inter_y_min >= inter_y_max:
+        return 0.0
+
+    inter_area = (inter_x_max - inter_x_min) * (inter_y_max - inter_y_min)
+    box1_area = (x1_max - x1_min) * (y1_max - y1_min)
+    box2_area = (x2_max - x2_min) * (y2_max - y2_min)
+
+    return inter_area / (box1_area + box2_area - inter_area)
+
+def calculate_distance_3d(coord1, coord2, use_z=True):
+    """Calculate 3D or 2D distance between two points."""
+    if use_z:
+        return np.sqrt((coord2[0] - coord1[0]) ** 2 + (coord2[1] - coord1[1]) ** 2 + (coord2[2] - coord1[2]) ** 2)
+    else:
+        return np.sqrt((coord2[0] - coord1[0]) ** 2 + (coord2[1] - coord1[1]) ** 2)
+
+def haversine_distance(coord1, coord2):
+    """Calculate the great-circle distance between two points on the Earth's surface."""
+    R = 6371  # Radius of the Earth in kilometers
+    lat1, lon1 = coord1
+    lat2, lon2 = coord2
+    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = np.sin(dlat / 2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2)**2
+    c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+    return R * c

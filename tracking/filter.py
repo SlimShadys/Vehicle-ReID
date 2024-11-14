@@ -4,9 +4,9 @@ from misc.utils import is_incomplete
 from reid.models.color_model import EfficientNet
 
 # Description: This script filters out the bounding boxes that are stationary, have the wrong color or have incomplete bounding boxes.
-def filter_frames(full_dict, reid_model, car_classifier, transforms, device,
-                  target_colors, stationary_threshold, min_stationary_frames,
-                    min_box_size, frame_width, frame_height):
+def filter_frames(full_dict, reid_model, car_classifier, transforms,
+                  device, perf_timer, target_colors, stationary_threshold,
+                  min_stationary_frames, min_box_size, frame_width, frame_height):
 
     # Variables to track removals
     frames_removed = {
@@ -52,6 +52,7 @@ def filter_frames(full_dict, reid_model, car_classifier, transforms, device,
                 full_dict[id] = filtered_same_cars
             else:
                 faulty_ids.append(id)
+        perf_timer.register_call("Main filtering")
 
     # Remove vehicles with stationary, incomplete, or no valid frames
     print("Removing faulty vehicles (Stationary, wrong color, or incomplete bounding boxes):")

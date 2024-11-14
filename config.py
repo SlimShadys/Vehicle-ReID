@@ -117,8 +117,6 @@ _C.REID.TEST.MODEL_VAL_PATH = "./reid/results/Test-14/model_ep-158_loss-0.0275.p
 _C.REID.TEST.PATH_IMG_1 = "data/test/honda_f.jpg"
 _C.REID.TEST.PATH_IMG_2 = "data/test/honda_f_2.jpg"
 _C.REID.TEST.STACK_IMAGES = True # Stack all the images to create a NxN matrix of similarity scores. Only available if run_reid_metrics is False
-_C.REID.TEST.SIMILARITY_ALGORITHM   = "cosine"  # "euclidean" / "cosine"
-_C.REID.TEST.SIMILARITY_METHOD      = "individual"    # "individual" / "mean"
 
 # ============================================================================================= #
 #                                    TRACKING CONFIGURATIONS                                    #
@@ -131,11 +129,11 @@ _C.TRACKING = ConfigNode()
 _C.TRACKING.MODEL = ConfigNode()
 _C.TRACKING.MODEL.YOLO_MODEL_NAME = 'yolov11x'
 _C.TRACKING.MODEL.TRACKED_CLASS = [(1, 'bicycle'), (2, 'car'), (3, 'motorcycle'), (5, 'bus'), (6, 'train'), (7, 'truck')]
-_C.TRACKING.MODEL.CONFIDENCE_THRESHOLD = 0.50           # Minimum confidence threshold for detections
-_C.TRACKING.MODEL.YOLO_IOU_THRESHOLD = 0.90             # Intersection Over Union (IoU) threshold for Non-Maximum Suppression (NMS)
-_C.TRACKING.MODEL.YOLO_IMAGE_SIZE = (640, 1216)         # Defines the image size for inference | Either a single integer or a tuple (height, width)
+_C.TRACKING.MODEL.CONFIDENCE_THRESHOLD = 0.55           # Minimum confidence threshold for detections
+_C.TRACKING.MODEL.YOLO_IOU_THRESHOLD = 0.85             # Intersection Over Union (IoU) threshold for Non-Maximum Suppression (NMS)
+_C.TRACKING.MODEL.YOLO_IMAGE_SIZE = (928, 928)          # Defines the image size for inference | Either a single integer or a tuple (height, width)
 _C.TRACKING.MODEL.USE_AGNOSTIC_NMS = True               # If True, NMS is applied independently to each class
-_C.TRACKING.MODEL.YOLO_TRACKER = 'custom_tracker.yaml' # YOLO Tracker Configuration File (custom_tracker.yaml / botsort.yaml / bytetrack.yaml)
+_C.TRACKING.MODEL.YOLO_TRACKER = './tracking/custom_tracker.yaml'       # YOLO Tracker Configuration File (./tracking/custom_tracker.yaml / botsort.yaml / bytetrack.yaml)
 
 # ========> FILTERING CONFIGS <========
 _C.TRACKING.STATIONARY_THRESHOLD = 0.01
@@ -161,13 +159,19 @@ _C.DB.TRAJECTORIES_COL = "Trajectories"
 _C.DB.BBOXES_COL = "BBoxes"
 _C.DB.VERBOSE = False
 
-# ================================================================================================== #
-#                                    FULL PIPELINE CONFIGURATIONS                                    #
-# ================================================================================================== #
-_C.TRACKING.VIDEO_PATH      = './tracking/video/output_camera2.mp4'                     # Path to the video file
-_C.MISC.TARGET_COLOR        = ['black', 'blue']                                         # Target colors for the Re-ID filtering process
-_C.MISC.RUN_PIPELINE        = True                                                      # If True, the pipeline will run the full process of tracking, Re-ID and DB insertion
-_C.MISC.RUN_UNIFICATION     = False                                                     # If True, the pipeline will ONLY run the unification process of the database
-_C.DB.CLEAN_DB              = True                                                      # If True, the database will be cleaned before inserting new data
-_C.TRACKING.USE_ROI_MASK    = True                                                      # If True, the pipeline will use a ROI mask to track the vehicles
-_C.TRACKING.ROI_MASK_PATH   = './tracking/video/roi_masks/output_camera2_roi_mask.png'  # Path to the ROI mask. Leave empty for creating a new one. USE_ROI_MASK must be True.
+# ============================================================================================= #
+#                                    PIPELINE CONFIGURATIONS                                    #
+# ============================================================================================= #
+_C.TRACKING.VIDEO_PATH                  = './data/AICity22_Track1_MTMC_Tracking/validation/S02/c006/vdo.avi' # Path to the video file or folder containing the video frames
+_C.MISC.TARGET_COLOR                    = ['blue']                                                   # Target colors for the Re-ID filtering process | [''] / ['red'] / ['blue'] / etc
+_C.DB.USE_DB                            = True                                                      # If True, the pipeline will insert the data into the database
+_C.DB.CLEAN_DB                          = True                                                      # If True, the database will be cleaned before inserting new data
+_C.TRACKING.USE_ROI_MASK                = True                                                      # If True, the pipeline will use a ROI mask to track the vehicles
+_C.TRACKING.ROI_MASK_PATH               = './data/AICity22_Track1_MTMC_Tracking/validation/S02/c006/roi.jpg'  # Path to the ROI mask. Leave empty for creating a new one. USE_ROI_MASK must be True.
+_C.TRACKING.SAMPLE_FRAMES               = True                                                     # If True, the pipeline will sample maximum 50 frames to reduce the number of frames stored
+_C.MISC.USE_FILTERS                     = True                                                      # If True, the pipeline will use filters to remove unwanted vehicles (color, stationary and incomplete)
+_C.MISC.RUN_PIPELINE                    = True                                                      # If True, the pipeline will run the full process of tracking, Re-ID and DB insertion
+_C.MISC.RUN_UNIFICATION                 = False                                                    # If True, the pipeline will ONLY run the unification process of the database
+_C.REID.TEST.SIMILARITY_ALGORITHM       = "cosine"      # "euclidean" / "cosine"
+_C.REID.TEST.SIMILARITY_METHOD          = "area_avg"    # "individual" / "mean" / "area_avg"
+_C.REID.TEST.SIMILARITY_METHOD_QUERY    = "mean"        # "individual" / "mean"

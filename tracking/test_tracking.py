@@ -11,6 +11,7 @@ import imageio.v3 as iio
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
+from tqdm import tqdm
 from model import load_yolo
 from PIL import Image, ImageDraw, ImageFont
 
@@ -37,6 +38,8 @@ def draw_box_and_tracks(frame, boxes, ids, classes, confidences, track_history):
 
     for box, track_id, cls, conf in zip(boxes, ids, classes, confidences):
 
+        if track_id == -1: continue # Skip the object if the tracker does not detect it
+
         x0, y0, x1, y1 = box # Format: XYXY
 
         color = tuple(int(c * 255) for c in colors[track_id % len(colors)])
@@ -50,8 +53,8 @@ def draw_box_and_tracks(frame, boxes, ids, classes, confidences, track_history):
 
         # Draw bounding box
         draw.rectangle([x0, y0, x1, y1], outline=color, width=3)
+        
         text = f"ID: {track_id}, {str(names[int(cls)]).upper()}: {conf:.2f}\nCOLOR: {car_color}"
-
         textcoords = draw_overlay.multiline_textbbox((x0, y1), text, font=font)
 
         if textcoords[3] >= img_pil.size[1] - 400:
@@ -143,7 +146,7 @@ model_val_path = reid_cfg.TEST.MODEL_VAL_PATH
 
 # If the color model is SVM, we need to Re-ID features from the ReID model first
 if color_model_configs.NAME == 'svm':
-    logger.reid(f"Building {reid_cfg.MODEL.NAME} model...")
+    logger.info(f"Building {reid_cfg.MODEL.NAME} model...")
     model_builder = ModelBuilder(
         model_name=model_name,
         pretrained=pretrained,
@@ -157,19 +160,19 @@ if color_model_configs.NAME == 'svm':
 
     # Load parameters from a .pth file
     if (model_val_path != ""):
-        logger.reid("Loading model parameters from file...")
+        logger.info("Loading model parameters from file...")
         if ('ibn' in model_name):
             model.load_param(model_val_path)
         else:
             checkpoint = torch.load(model_val_path, map_location=device)
             model.load_state_dict(checkpoint['model'])
-        logger.reid(f"Successfully loaded model parameters from file: {model_val_path}")
+        logger.info(f"Successfully loaded model parameters from file: {model_val_path}")
 
     model.eval()
     print(model)
 
 # Build the color model
-logger.color(f"Loading color model from {color_model_configs.NAME}...")
+logger.info(f"Loading color model from {color_model_configs.NAME}...")
 model_builder = ModelBuilder(
     model_name=color_model_configs.NAME,
     pretrained=pretrained,
@@ -178,22 +181,65 @@ model_builder = ModelBuilder(
     device=device
 )
 color_model = model_builder.move_to(device)
-logger.color(f"Successfully loaded color model from {color_model_configs.NAME}!")
+logger.info(f"Successfully loaded color model from {color_model_configs.NAME}!")
 
 # Transformations needed for the ReID model
 transforms = Transformations(dataset=None, configs=reid_cfg.AUGMENTATION)
 # ====================================================================== #
 
-# Load the video file and get its metadata
-reader = iio.imopen(input_path, 'r', plugin='pyav')
-codec = reader.metadata()['codec']  # Get the Codec used in the video
-fps = reader.metadata()['fps'] # Get the FPS of the video
-height, width, channels = iio.imread(input_path, index=0, plugin="pyav").shape # Get the shape of the video
+# Check if the path exists
+is_frames = False
+if not os.path.exists(input_path):
+    raise FileNotFoundError(f"The path '{input_path}' does not exist.")
+elif not os.path.isfile(input_path): # Detect if we are working with frames or a video
+    logger.info(f"Input path is a directory. Loading frames from {input_path}")
+    global_frames = [f for f in os.listdir(input_path) if os.path.isfile(os.path.join(input_path, f)) and (f.endswith('.jpg') or f.endswith('.png'))]
+    global_frames = sorted(global_frames, key=lambda x: int(x.split('.')[0].split('_')[-1]))  # Sort the frames based on the frame number
+    is_frames = True
+elif os.path.isfile(input_path): # We are working with a video
+    video_extensions = {".mp4", ".avi", ".mov", ".mkv"}  # Add other common video extensions as needed
+    file_extension = os.path.splitext(input_path)[-1].lower()
+    if file_extension not in video_extensions:
+        logger.error(f"Invalid video file format. Supported formats are {video_extensions}")
+        raise Exception()
+    else:
+        logger.info(f"Input path is a video file. Loading video from {input_path}")
+else:
+    logger.error(f"Invalid input path. Please provide a valid path to a video file or a directory containing frames.")
+    raise Exception()
+
+if is_frames:
+    # Load a single frame to get the video props
+    with iio.imopen(os.path.join(input_path, global_frames[0]), io_mode="r") as file:
+        frame = file.read()
+    FRAME_HEIGHT, FRAME_WIDTH, _ = frame.shape
+    FPS = 30  # Default FPS for frames
+    total_n_frames = len(global_frames)
+    codec = "mpeg4"  # Default codec for frames
+else: # We are working with a video
+    # Get the video props using OpenCV
+    cap = cv2.VideoCapture(R"{}".format(input_path))
+    if not cap.isOpened():
+        logger.info(f"Error opening video file at {input_path}")
+        raise Exception()
+    else:
+        logger.info(f"Successfully opened video file at {input_path}")
+
+    total_n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) # Get the total number of frames in the video
+    FPS = cap.get(cv2.CAP_PROP_FPS)                   # Get the frame rate (FPS) of the video
+    FRAME_WIDTH = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))    # Get the width of the frame
+    FRAME_HEIGHT = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))  # Get the height of the frame
+
+    # Load up the video using imageio
+    reader = iio.imopen(input_path, io_mode='r', plugin='pyav')
+    codec = reader.metadata()['codec']
+    reader = reader.iter()
+    
 
 if SAVE_VIDEO:
     writer = imageio.get_writer(os.path.join(output_path, input_path.split('/')[-1] + '_tracked.' + extension),
                                 format='FFMPEG', mode='I',
-                                fps=fps, codec=codec, macro_block_size=8)
+                                fps=FPS, codec=codec, macro_block_size=8)
 
 # Store the track history
 track_history = defaultdict(lambda: [])
@@ -212,144 +258,174 @@ if (use_roi_mask == True):
         mask = cv2.imread(roi_mask_path, 0)  # Grayscale mask
     else:
         # We need to extract a single frame from the video to create the mask
-        mask_frame = iio.imread(input_path, index=0, plugin="pyav")
-        mask = create_mask(mask_frame, input_path)
+        mask = create_mask(frame, input_path)
 
-    mask = cv2.resize(mask, (width, height))
+    mask = cv2.resize(mask, (FRAME_WIDTH, FRAME_HEIGHT))
 
 # Run the tracking loop
-for frame_number, orig_frame in enumerate(reader.iter()):
+with tqdm(total=total_n_frames, desc="Processing Video", unit="frame") as pbar:
+    # Initialize frame number and start the loop based on input type
+    frame_number = 0
 
-    # Calculate the timestamp for the current frame
-    timestamp = frame_number / fps
+    # Run the tracking loop
+    while frame_number < total_n_frames:
 
-    # YOLO Inference
-    start_time_yolo = time.perf_counter()
-
-    # Apply the mask: Keep only the region inside the mask (ROI)
-    if (use_roi_mask == True):
-        roi_frame = cv2.bitwise_and(orig_frame, orig_frame, mask=mask)
-        frame = roi_frame
-        #cv2.imshow("ROI Frame", cv2.cvtColor(roi_frame, cv2.COLOR_RGB2BGR))
-    else:
-        frame = orig_frame
-
-    # Run YOLO tracking on the frame
-    results = yolo_model.track(frame, classes=list([idx for idx, _ in tracked_classes]), conf=conf_thresh,
-                                imgsz=yolo_img_size, iou=yolo_iou_threshold,
-                                agnostic_nms=use_agnostic_nms, tracker=tracker_yaml_file,
-                                device=device, persist=True, verbose=False)
-    
-    end_time_yolo = time.perf_counter()
-
-    time_array.append(end_time_yolo - start_time_yolo)
-
-    # Extract bounding boxes, classes, names, and confidences
-    boxes = results[0].boxes.xyxy.cpu().tolist()
-    classes = results[0].boxes.cls.cpu().tolist()
-    if results[0].boxes.id is not None:
-        ids = results[0].boxes.id.int().cpu().tolist()
-    else:
-        ids = [0] * len(classes)
-    names = results[0].names
-    confidences = results[0].boxes.conf.tolist()
-
-    # Correctly update the track history with center coordinates
-    for box, track_id in zip(boxes, ids):
-        x0, y0, x1, y1 = map(int, box) # Format: XYXY
-        track = track_history[track_id]
-        # Append the center of the bounding box to the track history
-        center_x = x0 + ((x1 - x0) / 2)
-        center_y = y0 + ((y1 - y0) / 2)
-
-        x = Image.fromarray(orig_frame[y0:y1, x0:x1])                                   # Convert to PIL Image
-        x.save(f"./tracking/{frame_number}_{track_id}.jpg")
-        tensor_x = transforms.val_transform(x)                                          # Convert to torch.Tensor
-        tensor_x = tensor_x.unsqueeze(0).float().to(device)                             # Convert to Tensor and send to device
-
-        # EfficientNet
-        if isinstance(color_model, EfficientNet):
-            prediction = color_model.predict(tensor_x)
-            color_prediction = [entry['color'] for entry in prediction]
-        # ResNet + SVM
-        elif isinstance(color_model, SVM):
-            svm_embedding = model(tensor_x).detach().cpu().numpy()
-            color_prediction = color_model.predict(svm_embedding)
-
-        # Append the center of the bounding box and the color prediction to the track history
-        track.append(((center_x, center_y), color_prediction))
+        # Retrieve frame based on input type
+        if is_frames:
+            # Load the frame from the list of image files
+            with iio.imopen(os.path.join(input_path, global_frames[frame_number]), io_mode="r") as file:
+                orig_frame = file.read()
+        else:
+            # Load the next frame from the video
+            try:
+                orig_frame = next(reader)
+            except StopIteration:
+                break  # End of video stream
         
-        # Keep only the last 20 points
-        if len(track) > 20:
-            track.pop(0)
+        frame_number += 1 # Increment frame counter
 
-    # Draw boxes and tracklets
-    annotated_frame = draw_box_and_tracks(orig_frame, boxes, ids, classes, confidences, track_history)
+        # if frame_number < 1400:
+        #     pbar.update(1)
+        #     continue
 
-    # Display the FPS and number of detected objects
-    if DISP_INFOS:
-        total_time = end_time_yolo - start_time_yolo
-        fps = 1 / total_time
+        # Calculate the timestamp for the current frame
+        timestamp = frame_number / FPS
+
+        # YOLO Inference
+        start_time_yolo = time.perf_counter()
+
+        # Apply the mask: Keep only the region inside the mask (ROI)
+        if (use_roi_mask == True):
+            roi_frame = cv2.bitwise_and(orig_frame, orig_frame, mask=mask)
+            frame = roi_frame
+            #cv2.imshow("ROI Frame", cv2.cvtColor(roi_frame, cv2.COLOR_RGB2BGR))
+        else:
+            frame = orig_frame
+
+        # Run YOLO tracking on the frame
+        results = yolo_model.track(frame, classes=list([idx for idx, _ in tracked_classes]), conf=conf_thresh,
+                                    imgsz=yolo_img_size, iou=yolo_iou_threshold,
+                                    agnostic_nms=use_agnostic_nms, tracker=tracker_yaml_file,
+                                    device=device, persist=True, verbose=False)
         
-        # Define colors and font size for the text
-        info_color = (255, 255, 255)  # White text color
-        background_color = (0, 0, 0)  # Black background for text box
-        background_opacity = 0.6  # Background transparency
-        padding = 10  # Padding for text box
+        end_time_yolo = time.perf_counter()
 
-        # Define font size for better visibility
-        font_size = 0.60
-        font_thickness = 1
+        time_array.append(end_time_yolo - start_time_yolo)
 
-        # Information to display
-        info_text = [
-            #f'FPS: {int(fps)}',
-            f'DETECTED OBJECTS: {len(results[0].boxes.cls)}',
-            #f'TRACKED CLASS: {list(tracked_classes.values())}',
-            f'FRAME NUMBER: {frame_number}'
-        ]
+        # Extract bounding boxes, classes, names, and confidences
+        boxes = results[0].boxes.xyxy.cpu().tolist()
+        classes = results[0].boxes.cls.cpu().tolist()
+        if results[0].boxes.id is not None:
+            ids = results[0].boxes.id.int().cpu().tolist()
+        else:
+            ids = [-1] * len(boxes) # This point is reached when YOLO detects the object but the tracker does not
+        names = results[0].names
+        confidences = results[0].boxes.conf.tolist()
 
-        # Starting y-position for the info display
-        y_start = 40
+        # Correctly update the track history with center coordinates
+        for box, track_id in zip(boxes, ids):
+            if track_id == -1:
+                continue # Skip the object if the tracker does not detect it
+            else:
+                track = track_history[track_id]
+                x0, y0, x1, y1 = map(int, box) # Format: XYXY
+                
+                # Append the center of the bounding box to the track history
+                center_x = x0 + ((x1 - x0) / 2)
+                center_y = y0 + ((y1 - y0) / 2)
 
-        for idx, text in enumerate(info_text):
-            # Calculate the width and height of the text box
-            (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_size, font_thickness)
+                x = Image.fromarray(orig_frame[y0:y1, x0:x1])                                   # Convert to PIL Image
+                #x.save(f"./tracking/{frame_number}_{track_id}.jpg")
+                tensor_x = transforms.val_transform(x)                                          # Convert to torch.Tensor
+                tensor_x = tensor_x.unsqueeze(0).float().to(device)                             # Convert to Tensor and send to device
 
-            # Create a filled rectangle as the background of the text
-            cv2.rectangle(
-                annotated_frame, 
-                (20, y_start - text_height - padding), 
-                (20 + text_width + padding * 2, y_start + padding), 
-                (background_color[0], background_color[1], background_color[2], int(background_opacity * 255)),
-                -1
-            )
+                # EfficientNet
+                if isinstance(color_model, EfficientNet):
+                    prediction = color_model.predict(tensor_x)
+                    color_prediction = [entry['color'] for entry in prediction]
+                # ResNet + SVM
+                elif isinstance(color_model, SVM):
+                    svm_embedding = model(tensor_x).detach().cpu().numpy()
+                    color_prediction = color_model.predict(svm_embedding)
 
-            # Draw the text with the font on top of the rectangle
-            cv2.putText(
-                annotated_frame, text, 
-                (20 + padding, y_start), 
-                cv2.FONT_HERSHEY_SIMPLEX, 
-                font_size, 
-                info_color, 
-                font_thickness
-            )
+                # Append the center of the bounding box and the color prediction to the track history
+                track.append(((center_x, center_y), color_prediction))
+                
+                # Keep only the last 20 points
+                if len(track) > 20:
+                    track.pop(0)
 
-            # Move to the next line
-            y_start += text_height + 2 * padding
+        # Draw boxes and tracklets
+        annotated_frame = draw_box_and_tracks(orig_frame, boxes, ids, classes, confidences, track_history)
 
-    if SAVE_VIDEO:
-        writer.append_data(annotated_frame)
+        # Display the FPS and number of detected objects
+        if DISP_INFOS:
+            total_time = end_time_yolo - start_time_yolo
+            fps = 1 / total_time
+            
+            # Define colors and font size for the text
+            info_color = (255, 255, 255)  # White text color
+            background_color = (0, 0, 0)  # Black background for text box
+            background_opacity = 0.6  # Background transparency
+            padding = 10  # Padding for text box
 
-    # Display the annotated frame
-    cv2.imshow(f"{tracking_cfg.MODEL.YOLO_MODEL_NAME} Tracking", cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR))
+            # Define font size for better visibility
+            font_size = 0.60
+            font_thickness = 1
 
-    # Break the loop if 'q' is pressed
-    if cv2.waitKey(1) & 0xFF == ord("q"):
-        break
+            # Information to display
+            info_text = [
+                #f'FPS: {int(fps)}',
+                f'DETECTED OBJECTS: {len(results[0].boxes.cls)}',
+                #f'TRACKED CLASS: {list(tracked_classes.values())}',
+                f'FRAME NUMBER: {frame_number}',
+                f'TIMESTAMP: {timestamp:.2f} seconds'
+            ]
+
+            # Starting y-position for the info display
+            y_start = 40
+
+            for idx, text in enumerate(info_text):
+                # Calculate the width and height of the text box
+                (text_width, text_height), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_size, font_thickness)
+
+                # Create a filled rectangle as the background of the text
+                cv2.rectangle(
+                    annotated_frame, 
+                    (20, y_start - text_height - padding), 
+                    (20 + text_width + padding * 2, y_start + padding), 
+                    (background_color[0], background_color[1], background_color[2], int(background_opacity * 255)),
+                    -1
+                )
+
+                # Draw the text with the font on top of the rectangle
+                cv2.putText(
+                    annotated_frame, text, 
+                    (20 + padding, y_start), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 
+                    font_size, 
+                    info_color, 
+                    font_thickness
+                )
+
+                # Move to the next line
+                y_start += text_height + 2 * padding
+
+        if SAVE_VIDEO:
+            writer.append_data(annotated_frame)
+
+        # Display the annotated frame
+        window_name = f"{tracking_cfg.MODEL.YOLO_MODEL_NAME} Tracking"
+        cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
+        # cv2.moveWindow(window_name, 900, 900)
+        cv2.imshow(window_name, cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR))
+
+        # Break the loop if 'q' is pressed
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
     
 # Release the video reader and writer
-reader.close()
+if not is_frames: reader.close()
 
 if SAVE_VIDEO: writer.close()
     
