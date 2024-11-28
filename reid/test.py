@@ -180,9 +180,12 @@ def main(config, seed):
 
     # Number of classes in each dataset (Only for ID classification tasks, hence only training set is considered)
     num_classes = {
+        'ai_city': 440,
+        'ai_city_sim': 1802,
+        'vehicle_id': 13164,
         'veri_776': 576,
         'veri_wild': 30671,
-        'vehicle_id': 13164,
+        'vric': 2811,
         'vru': 7086,
     }
     

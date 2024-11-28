@@ -49,12 +49,17 @@ def cosine_similarity_np(vec1, vec2):
     return np.dot(vec1, vec2) / (norm1 * norm2) 
 
 def sample_trajectory_frames(frames, min_samples=10, max_samples=50):
-    if len(frames) <= max_samples:
-        return frames
-    
+
+    # If the number of frames is less than the minimum, return an empty list
     if len(frames) < min_samples:
         return []
 
+    # If the number of frames is within the range, return all frames
+    if len(frames) <= max_samples and len(frames) >= min_samples:
+        return frames
+
+    # => Here we do arrive only if the number of frames is greater than the maximum
+    
     # Always include the first 3 and last 3 frames
     num_middle_samples = max_samples - 6  # Subtract the first 3 and last 3 frames
     # Generate indices for middle frames
@@ -78,13 +83,13 @@ def compress_img(img):
     return compressed_data
 
 def is_incomplete(box, min_box_size, frame_width, frame_height, margin=50, center_threshold=0.2):
-    x1, y1, x2, y2 = box
-    box_width = x2 - x1
-    box_height = y2 - y1
+    tx, ty, w, h = box # TLWH format
+    box_width = w
+    box_height = h
     
     # Center of the bounding box
-    box_center_x = (x1 + x2) / 2
-    box_center_y = (y1 + y2) / 2
+    box_center_x = tx + w / 2
+    box_center_y = ty + h / 2
     
     # Define the central region of the frame
     center_x_min = frame_width * (center_threshold / 2)
@@ -97,10 +102,12 @@ def is_incomplete(box, min_box_size, frame_width, frame_height, margin=50, cente
         return True
     
     # Check if the bounding box extends beyond the frame boundaries
-    if (x1 < margin or y1 < margin or x2 > (frame_width - margin) or y2 > (frame_height - margin)):
+    if (tx < margin or ty < margin or tx + w > (frame_width - margin) or ty + h > (frame_height - margin)):
         return True
+    # if (x1 < margin or y1 < margin or x2 > (frame_width - margin) or y2 > (frame_height - margin)):
+    #     return True
     
-    # # Check if the bounding box is near the center
+    # Check if the bounding box is near the center
     if not (box_center_x > center_x_min and box_center_x < center_x_max and box_center_y > center_y_min and box_center_y < center_y_max):
         return True
     
@@ -408,15 +415,26 @@ def eval_func(distmat, q_pids, g_pids, q_camids, g_camids, max_rank=50, dataset_
     
     description = "Computing CMC and mAP" if not re_rank else "Computing CMC and mAP with re-ranking"
     for q_idx in tqdm(range(num_q), desc=description, total=num_q):
-        if dataset_name == 'vehicle_id' or dataset_name == 'vru':
-            remove = False  # without camid imformation remove no images in gallery
+        if type(dataset_name) == str:
+            if dataset_name == 'vehicle_id' or dataset_name == 'vru':
+                remove = False  # without camid imformation remove no images in gallery
+            else:
+                q_pid = q_pids[q_idx]
+                q_camid = q_camids[q_idx]
+                # remove gallery samples that have the same pid and camid with query
+                order = indices[q_idx]
+                remove = (g_pids[order] == q_pid) & (g_camids[order] == q_camid)
+            keep = np.invert(remove)
         else:
-            q_pid = q_pids[q_idx]
-            q_camid = q_camids[q_idx]
-            # remove gallery samples that have the same pid and camid with query
-            order = indices[q_idx]
-            remove = (g_pids[order] == q_pid) & (g_camids[order] == q_camid)
-        keep = np.invert(remove)
+            if any(substring in name for name in dataset_name for substring in ['vehicle_id', 'vru']):
+                remove = False  # without camid imformation remove no images in gallery
+            else:
+                q_pid = q_pids[q_idx]
+                q_camid = q_camids[q_idx]
+                # remove gallery samples that have the same pid and camid with query
+                order = indices[q_idx]
+                remove = (g_pids[order] == q_pid) & (g_camids[order] == q_camid)
+            keep = np.invert(remove)                
 
         # compute cmc curve
         # binary vector, positions with value 1 are correct matches
@@ -629,7 +647,6 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)  # for multi-GPU
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-    print("Correctly set the seed to:", seed)
 
 # Example function to calculate direction vector from centroid positions
 def calculate_direction_vector(trajectory_frames):

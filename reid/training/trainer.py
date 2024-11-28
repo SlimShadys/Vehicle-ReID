@@ -14,6 +14,8 @@ from tqdm import tqdm
 from misc.utils import (euclidean_dist, eval_func, load_model, re_ranking,
                         read_image, save_model, search, strint,
                         visualize_ranked_results)
+from reid.dataset import CombinedDataset
+from reid.datasets.ai_city import AICity, AICitySim
 from reid.datasets.transforms import Transformations
 from reid.datasets.vehicle_id import VehicleID
 from reid.datasets.veri_776 import Veri776
@@ -30,7 +32,7 @@ class Trainer:
         dataloaders: Dict[str, Union[
                                         Optional[DataLoader],
                                         Dict[str, Tuple[DataLoader, int]], 
-                                        Type[Union[VehicleID, Veri776, VeriWild, VRU]], 
+                                        Type[Union[AICity, AICitySim, CombinedDataset, VehicleID, Veri776, VeriWild, VRU]], 
                                         Transformations
                                     ]
                         ],
@@ -78,10 +80,9 @@ class Trainer:
             self.optimizer_name = self.train_configs.OPTIMIZER
 
             # Augmentation configurations
-            self.img_height = self.augmentation_configs.HEIGHT + \
-                self.augmentation_configs.PADDING * 2
-            self.img_width = self.augmentation_configs.WIDTH + \
-                self.augmentation_configs.PADDING * 2
+            size = self.augmentation_configs.RESIZE
+            self.img_height = size[0] if isinstance(size, tuple) else size + self.augmentation_configs.PADDING * 2
+            self.img_width  = size[1] if isinstance(size, tuple) else size + self.augmentation_configs.PADDING * 2
 
             self.start_epoch = 0
             self.running_loss = []
@@ -164,7 +165,7 @@ class Trainer:
             data_index = search(self.split_dir)
 
         # Warning: use `torch.amp.GradScaler('cuda', args...)` instead.
-        scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
+        scaler = torch.amp.GradScaler(enabled=self.use_amp)
 
         for epoch in range(self.start_epoch, self.epochs):
             self.empty_lists()  # Empty the lists for each epoch
@@ -182,7 +183,8 @@ class Trainer:
             opt_lr = self.scheduler.optimizer.param_groups[0]['lr']
 
             if (epoch > 0 and epoch % self.val_interval == 0):
-                self.validate(epoch, save_results=True, metrics=['reid'])
+                if self.val_loader is not None:
+                    self.validate(epoch, save_results=True, metrics=['reid'])
 
             print(f"Epoch {epoch}/{self.epochs} | LR: {opt_lr:.2e}\n"
                   f"\t - ID Loss: {np.mean(self.running_id_loss):.4f}\n"
@@ -240,7 +242,11 @@ class Trainer:
                 trainY[j + self.batch_size] = pos_dic[2]
                 trainY[j + (self.batch_size * 2)] = neg_dic[2]
 
-            self.optimizer.zero_grad()
+            # Equivalent to: self.optimizer.zero_grad()
+            # But explicitly setting the gradients to None for each parameter
+            # for optimizing memory usage and speed.
+            self.optimizer.zero_grad(set_to_none=True)
+
             trainX = trainX.to(self.device)
             trainY = trainY.to(self.device)
 
@@ -295,7 +301,10 @@ class Trainer:
         for batch_idx, (img_path, img, folders, indices, car_id, cam_id, model_id, color_id, type_id, timestamp) in tqdm(enumerate(self.train_loader), total=len(self.train_loader), desc=f"Epoch {epoch}/{self.epochs}"):
             img, car_id = img.to(self.device), car_id.to(self.device)
 
-            self.optimizer.zero_grad()
+            # Equivalent to: self.optimizer.zero_grad()
+            # But explicitly setting the gradients to None for each parameter
+            # for optimizing memory usage and speed.
+            self.optimizer.zero_grad(set_to_none=True)
 
             with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=self.use_amp):
                 # Forward pass on the Network
@@ -332,6 +341,7 @@ class Trainer:
                       f"Metric Loss: {np.mean(self.running_metric_loss):.4f} | "
                       f"Accuracy: {np.mean(self.acc_list):.4f} | "
                       f"LR: {self.scheduler.get_lr()[0]:.2e}")
+            # if batch_idx == 1: break
 
     def validate_color(self, img: torch.Tensor, color_id: torch.Tensor):
 
@@ -405,6 +415,7 @@ class Trainer:
                 car_ids.append(car_id)
                 cam_ids.append(cam_id)
                 paths.extend(img_path)
+                # if i == 1: break
 
         if 'reid' in metrics:
             features = torch.cat(features, dim=0)
@@ -463,17 +474,22 @@ class Trainer:
         if 'reid' in metrics:
             distmat = euclidean_dist(query_feat, gallery_feat, self.use_amp, train=False)
 
+            if type(self.dataset) == CombinedDataset:
+                dataset_name = self.dataset.dataset_names
+            else:
+                dataset_name = self.dataset.dataset_name
+                
             CMC_RANKS = [1, 3, 5, 10]
             cmc, mAP, _ = eval_func(distmat.numpy(), query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(),
                 query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(),
-                max_rank=max(CMC_RANKS), dataset_name=self.dataset.dataset_name, re_rank=False)
+                max_rank=max(CMC_RANKS), dataset_name=dataset_name, re_rank=False)
                         
             if (self.re_ranking):
                 distmat_re = re_ranking(query_feat, gallery_feat, k1=80, k2=15, lambda_value=0.2)
 
                 cmc_re, mAP_re, _ = eval_func(distmat_re, query_pid.detach().cpu().numpy(), gallery_pid.detach().cpu().numpy(),
                                                 query_camid.detach().cpu().numpy(), gallery_camid.detach().cpu().numpy(),
-                                                max_rank=max(CMC_RANKS), dataset_name=self.dataset.dataset_name, re_rank=True)
+                                                max_rank=max(CMC_RANKS), dataset_name=dataset_name, re_rank=True)
 
             # Visualize the ranked results if the flag is set to True
             if (self.visualize_ranks):

@@ -35,10 +35,9 @@ class Transformations:
         self.dataset = dataset
 
         # Various transformations settings
-        self.height = configs.HEIGHT if configs is not None else 0
-        self.width = configs.WIDTH if configs is not None else 0
+        self.resize = configs.RESIZE if configs is not None else 0
+        self.random_crop = configs.RANDOM_CROP if configs is not None else (0, 0)
         self.horizontal_flip_prob = configs.RANDOM_HORIZONTAL_FLIP_PROB if configs is not None else 0.0
-        self.random_crop = tuple(configs.RANDOM_CROP) if configs is not None else (0, 0)
         self.erasing_prob = configs.RANDOM_ERASING_PROB if configs is not None else 0.0
         self.jitter_brightness = configs.JITTER_BRIGHTNESS if configs is not None else 0.0
         self.jitter_contrast = configs.JITTER_CONTRAST if configs is not None else 0.0
@@ -53,12 +52,12 @@ class Transformations:
         self.transform_train = []
         
         # Resize to specified size
-        if (self.height != 0 and self.width != 0):
-            self.transform_train += [transforms.Resize((self.height, self.width))] 
+        if (self.resize != 0 or self.resize != (0, 0)):
+            self.transform_train += [transforms.Resize(self.resize)]
             
         # Random crop to specified size
-        if (self.random_crop != (0, 0) or self.random_crop != None):
-            self.transform_train += [transforms.RandomCrop((self.height, self.width))]
+        if (self.random_crop != 0 or self.resize != (0, 0) or self.random_crop != None):
+            self.transform_train += [transforms.RandomCrop(self.random_crop)]
         
         # Random horizontal flip
         if (self.horizontal_flip_prob != 0.0):
@@ -79,7 +78,7 @@ class Transformations:
             self.transform_train += [ColorAugmentation()]
     
         # Pad the image with the specified padding
-        if (self.padding != 0.0):
+        if (self.padding != 0.0) or (self.padding != (0, 0)):
             self.transform_train += [transforms.Pad(self.padding)]
             
         # Normalize the image with the specified mean and std
@@ -96,8 +95,8 @@ class Transformations:
         self.transform_val = []
 
         # Resize to specified size
-        if (self.height != 0 and self.width != 0):
-            self.transform_val += [transforms.Resize((self.height, self.width))] 
+        if (self.resize != 0 or self.resize != (0, 0)):
+            self.transform_val += [transforms.Resize(self.resize)] 
             
         # Convert to tensor
         self.transform_val += [transforms.ToTensor()]
