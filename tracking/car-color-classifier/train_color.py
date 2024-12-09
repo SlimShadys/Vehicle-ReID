@@ -3,8 +3,6 @@ import random
 import sys
 from types import SimpleNamespace
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-
 import time
 
 import numpy as np
@@ -16,15 +14,17 @@ from sklearn.svm import SVC
 from torch.optim import Adam
 from torch.utils.data import DataLoader, Dataset
 from torchvision import models
-
 # import weights for EfficientNet B3/B5
 from torchvision.models.efficientnet import (EfficientNet_B3_Weights,
                                              EfficientNet_B5_Weights)
 from tqdm import tqdm
 
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+
 from config import _C as cfg_file
 from misc.printer import Logger
 from misc.utils import get_imagedata_info, read_image, weights_init_classifier
+from reid.dataset import pad_tensor_centered
 from reid.datasets import Transformations, Veri776, VeriWild
 from reid.model import ModelBuilder
 
@@ -58,9 +58,20 @@ class ImageDataset(Dataset):
     def train_collate_fn(self, batch) -> tuple[list[str], torch.Tensor, torch.Tensor, torch.Tensor, int, int, int, str]:
         img_paths, imgs, folders, indices, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps = zip(*batch)
 
+        # Get shapes of all images
+        shapes = [(img.shape[1], img.shape[2]) for img in imgs]
+        
+        # Check if all shapes are the same
+        if len(set(shapes)) != 1:
+            # Images have different shapes, need padding
+            max_h = max(shape[0] for shape in shapes)
+            max_w = max(shape[1] for shape in shapes)
+            
+            padded_imgs = [pad_tensor_centered(img, (max_h, max_w)) for img in imgs]
+            imgs = padded_imgs
+
         # Transform Car IDs and Images to Tensors
-        # [batch_size, 3, height, width]
-        imgs = torch.stack(imgs, dim=0)
+        imgs = torch.stack(imgs, dim=0) # [batch_size, 3, height, width]
         car_ids = torch.tensor(car_ids, dtype=torch.int64)  # [batch_size]
         cam_ids = torch.tensor(cam_ids, dtype=torch.int64)
         color_ids = torch.tensor(color_ids, dtype=torch.int64)
@@ -69,6 +80,24 @@ class ImageDataset(Dataset):
 
     def val_collate_fn(self, batch) -> tuple[list[str], torch.Tensor, torch.Tensor, torch.Tensor, int, int, int, str]:
         img_paths, imgs, folders, indices, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps = zip(*batch)
+
+        # Get shapes of all images
+        shapes = [(img.shape[1], img.shape[2]) for img in imgs]
+        
+        # Check if all shapes are the same
+        if len(set(shapes)) != 1:
+            # Images have different shapes, need padding
+            max_h = max(shape[0] for shape in shapes)
+            max_w = max(shape[1] for shape in shapes)
+            
+            padded_imgs = [pad_tensor_centered(img, (max_h, max_w)) for img in imgs]
+            imgs = padded_imgs
+
+        # Alternative: Simply resize the images to a fixed size, in this case (320, 320)
+        # imgs = torch.stack([torch.nn.functional.interpolate(
+        #                         img.unsqueeze(0), size=(320, 320),
+        #                         mode='bilinear', align_corners=False).squeeze(0) 
+        #                     for img in imgs], dim=0)
 
         # Transform Car IDs and Images to Tensors
         imgs = torch.stack(imgs, dim=0)                     # [batch_size, 3, height, width]
@@ -103,21 +132,20 @@ def main():
     lr = 1e-3 * (batch_size / 32)
     epochs = reid_cfg.TRAINING.EPOCHS
     data_path = reid_cfg.DATASET.DATA_PATH
-    dataset_size = 100 # This means that we'll take only the 50% of the dataset
+    dataset_size = 100 # This means that we'll take only 100% of the dataset
 
     # Augmentation configurations
     augmentation_configs = {
-        'HEIGHT': 320,
-        'WIDTH': 320,
+        'RESIZE': 320,
+        'RANDOM_CROP': 320,
         'RANDOM_HORIZONTAL_FLIP_PROB': 0.5,
-        'RANDOM_CROP': (320, 320),
         'RANDOM_ERASING_PROB': 0.0,
         'JITTER_BRIGHTNESS': 0.0,
         'JITTER_CONTRAST': 0.0,
         'JITTER_SATURATION': 0.0,
         'JITTER_HUE': 0.0,
         'COLOR_AUGMENTATION': False,
-        'PADDING': 0.0,
+        'PADDING': 0,
         'NORMALIZE_MEAN': None,
         'NORMALIZE_STD': None
     }
@@ -208,9 +236,6 @@ def main():
     print(f"\t- Veri-776 Dataset: {lenv776_t_new + lenv776_q_new + lenv776_g_new:.3f}% of entries removed")
     print(f"\t- Veri-Wild Dataset: {lenvw_t_new + lenvw_q_new + lenvw_g_new:.3f}% of entries removed")
 
-    # Transformations for the dataset
-    transforms = Transformations(configs=augmentation_configs)
-
     # Reduce the dataset size if needed
     if dataset_size != None:
         dataset_veri776.train = dataset_veri776.train[:int(len(dataset_veri776.train) * (dataset_size / 100))]
@@ -220,6 +245,9 @@ def main():
         dataset_veriwild.query = dataset_veriwild.query[:int(len(dataset_veriwild.query) * (dataset_size / 100))]
         dataset_veriwild.gallery = dataset_veriwild.gallery[:int(len(dataset_veriwild.gallery) * (dataset_size / 100))]
         print(f"Dataset size filtered at {dataset_size}%")
+
+    # Transformations for the dataset
+    transforms = Transformations(configs=augmentation_configs)
 
     # Create the train and validation datasets
     train_set = ImageDataset(data=dataset_veri776.train + dataset_veriwild.train,

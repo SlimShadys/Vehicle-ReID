@@ -58,6 +58,7 @@ def main(config, seed):
     model_name = model_configs.NAME
     pretrained = model_configs.PRETRAINED
     fine_tuning = model_configs.RUN_FINETUNING
+    model_configs.PADDING_MODE = augmentation_configs.PADDING_MODE
 
     # Loss parameters
     loss_type = loss_configs.TYPE

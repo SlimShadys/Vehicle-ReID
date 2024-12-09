@@ -53,6 +53,7 @@ class ModelBuilder:
         use_gem = self.model_configs.USE_GEM # GeM or AdaptiveAvg pooling
         use_stride = self.model_configs.USE_STRIDE # Use stride in the last layer
         use_bottleneck = self.model_configs.USE_BOTTLENECK # Use Bottleneck block
+        padding_mode = self.model_configs.PADDING_MODE # Padding mode
         
         if self.model_name not in self.resnet_models:
             raise ValueError(f"Unsupported ResNet model: {self.model_name}")
@@ -73,6 +74,7 @@ class ModelBuilder:
                               use_gem=use_gem,
                               use_stride=use_stride,
                               use_bottleneck=use_bottleneck,
+                              padding_mode=padding_mode,
                               pretrained=(self.pretrained, resnet_urls[self.model_name]))
         else:
             return ResNet(self.model_name,
@@ -80,6 +82,7 @@ class ModelBuilder:
                           use_gem=use_gem,
                           use_stride=use_stride,
                           use_bottleneck=use_bottleneck,
+                          padding_mode=padding_mode,
                           pretrained=(self.pretrained, resnet_urls[self.model_name]))
 
     # Specific Model Builder for Vision Transformer

@@ -1,5 +1,6 @@
 import pymongo
 from misc.printer import Logger
+from copy import deepcopy
 
 # Wrapper for MongoDB Database connection
 class Database():
@@ -53,11 +54,11 @@ class Database():
     def insert_trajectory(self, trajectory, update=False):
         if self.verbose: self.logger.debug(f"Inserting trajectory with ID: {trajectory['_id']}")
 
-        # Extract the necessary fields from the new trajectory data
-        new_end_time = trajectory['end_time']
-
         # Update the trajectory if requested
         if update:
+            # Extract the necessary fields from the new trajectory data
+            new_end_time = trajectory['end_time']
+
             # Retrieve the new trajectory data
             new_trajectory_data = trajectory['trajectory_data']
 
@@ -82,95 +83,113 @@ class Database():
         self.bboxes_col.insert_one(bbox) # Insert the new bounding box
 
     def update_bbox(self, new_vid, old_vid):
-        # Find all documents with the old vehicle_id
-        documents = self.bboxes_col.find({'vehicle_id': old_vid})
+        # Find all documents with the old vehicle_id and new vehicle_id
+        old_documents = list(self.bboxes_col.find({'vehicle_id': old_vid}))
+        new_documents = list(self.bboxes_col.find({'vehicle_id': new_vid}))
 
-        # Get latest frame_number from the new vehicle_id and increment it by 1
-        frame_number = int([data for data in self.bboxes_col.find({'vehicle_id': new_vid})][-1]['_id'].split('_F')[-1]) + 1
+        # Combine both sets of documents and sort them by timestamp
+        combined_documents = sorted(old_documents + new_documents, key=lambda x: (x['timestamp'], x['frame_number']))
 
         # Prepare a list of update operations
         updates = []
+        deletes = []
 
-        for i, doc in enumerate(documents):
-            # Create the new _id by replacing the old vehicle ID with the new one
-            new_id = f"{new_vid}_F{frame_number + i}"
+        for i, doc in enumerate(combined_documents):
+            # Create the new _id ensuring frame numbers are sequential
+            new_id = f"{new_vid}_F{i+1}"
 
-            # Create an update operation to change both _id and vehicle_id
+            # Update the document to have the correct new_vid and _id
             update_operation = pymongo.InsertOne(
-                {'_id'          : new_id,       # Update the _id to the new one
-                'confidence'    : doc['confidence'],
-                'bounding_box'  : doc['bounding_box'],
-                'cropped_image' : doc['cropped_image'],
-                'timestamp'     : doc['timestamp'],
-                'features'      : doc['features'],
-                'shape'         : doc['shape'],
-                'vehicle_id'    : new_vid,      # Update the vehicle_id to the new one
-                 }
+                {
+                    '_id': new_id,                      # New sequential ID
+                    'frame_number': doc['frame_number'], # Updated frame number
+                    'vehicle_id': new_vid,              # Updated vehicle ID
+                    'compressed_image': doc['compressed_image'],
+                    'bounding_box': doc['bounding_box'],
+                    'confidence': doc['confidence'],
+                    'features': doc['features'],
+                    'shape': doc['shape'],
+                    'timestamp': doc['timestamp'],
+                }
             )
-            updates.append(update_operation)                        # Append the update operation to the list
-            updates.append(pymongo.DeleteOne({'_id': doc['_id']}))  # Delete the old document
-                                                  
+            updates.append(update_operation)
+            deletes.append(pymongo.DeleteOne({'_id': doc['_id']}))  # Delete the old document
+
         # Execute the updates in bulk
+        if deletes:
+            self.bboxes_col.bulk_write(deletes)
+            if self.verbose:
+                self.logger.debug(
+                    f"Deleted {len(deletes)} documents. Merged vehicle {old_vid} into {new_vid}.")
         if updates:
             self.bboxes_col.bulk_write(updates)
-            if self.verbose: self.logger.debug(f"Updated {len(updates)} documents. Merged vehicle {old_vid} into {new_vid}.")
+            if self.verbose:
+                self.logger.debug(
+                    f"Updated {len(combined_documents)} documents. Merged vehicle {old_vid} into {new_vid}."
+                )
         else:
-            if self.verbose: self.logger.debug("No documents found to update.")
+            if self.verbose:
+                self.logger.debug("No documents found to update.")
+        # # Find all documents with the old vehicle_id
+        # documents = self.bboxes_col.find({'vehicle_id': old_vid})
+
+        # # Get latest frame_number from the new vehicle_id and increment it by 1
+        # frame_number = int([data for data in self.bboxes_col.find({'vehicle_id': new_vid})][-1]['_id'].split('_F')[-1]) + 1
+
+        # # Prepare a list of update operations
+        # updates = []
+
+        # for i, doc in enumerate(documents):
+        #     # Create the new _id by replacing the old vehicle ID with the new one
+        #     new_id = f"{new_vid}_F{frame_number + i}"
+
+        #     # Create an update operation to change both _id and vehicle_id
+        #     update_operation = pymongo.InsertOne(
+        #         {'_id'              : new_id,       # Update the _id to the new one
+        #         'frame_number'      : doc['frame_number'],
+        #         'vehicle_id'        : new_vid,      # Update the vehicle_id to the new one
+        #         'compressed_image'  : doc['compressed_image'],
+        #         'bounding_box'      : doc['bounding_box'],
+        #         'confidence'        : doc['confidence'],
+        #         'features'          : doc['features'],
+        #         'shape'             : doc['shape'],
+        #         'timestamp'         : doc['timestamp'],
+        #         }
+        #     )
+        #     updates.append(update_operation)                        # Append the update operation to the list
+        #     updates.append(pymongo.DeleteOne({'_id': doc['_id']}))  # Delete the old document
+                                                  
+        # # Execute the updates in bulk
+        # if updates:
+        #     self.bboxes_col.bulk_write(updates)
+        #     if self.verbose: self.logger.debug(f"Updated {len(updates)} documents. Merged vehicle {old_vid} into {new_vid}.")
+        # else:
+        #     if self.verbose: self.logger.debug("No documents found to update.")
 
     def update_trajectory(self, new_vid, old_vid):
         # Step 1: Retrieve the trajectory for the new vehicle
         trajectory = self.trajectories_col.find_one({'vehicle_id': new_vid})
+        trajectory_old = self.trajectories_col.find_one({'vehicle_id': old_vid})
         
-        if not trajectory:
+        if not trajectory or not trajectory_old:
             self.logger.debug(f"No trajectory found for vehicle {new_vid}")
             return
 
-        # Step 2: Get all bounding boxes for the new vehicle from the bboxes collection
-        bboxes = list(self.bboxes_col.find({'vehicle_id': new_vid}).sort('timestamp', pymongo.ASCENDING))
+        # Update trajectory with the new start and end time (start time must be the minimum of the two)
+        new_start_time = min(trajectory['start_time'], trajectory_old['start_time'])
+        new_end_time = max(trajectory['end_time'], trajectory_old['end_time'])
 
-        # Step 3: Compare the number of entries in trajectory_data and the bounding box collection
-        trajectory_data = trajectory['trajectory_data']
+        # Step 8: Apply the update to the trajectory
+        self.trajectories_col.update_one({'_id': trajectory['_id']},
+                                            {"$set": {
+                                            'start_time': new_start_time,
+                                            'end_time': new_end_time}},
+                                            upsert=True)
         
-        if len(bboxes) == len(trajectory_data):
-            self.logger.debug(f"Trajectory for {new_vid} is already up-to-date.")
-            return
-        else:
-            # Step 4: Identify missing bounding boxes by timestamp and append them
-            bbox_ids_in_trajectory = {box['_id'] for box in trajectory_data}
-            new_bboxes = [bbox for bbox in bboxes if bbox['_id'] not in bbox_ids_in_trajectory]
-
-            # Add the missing bounding boxes to trajectory_data
-            for bbox in new_bboxes:
-                trajectory_data.append({
-                    'confidence': bbox['confidence'],
-                    'bounding_box': bbox['bounding_box'],
-                    'cropped_image': bbox['cropped_image'],
-                    'timestamp': bbox['timestamp'],
-                    'features': bbox['features'],
-                    'shape': bbox['shape'],
-                    '_id': bbox['_id'],
-                    'vehicle_id': bbox['vehicle_id']
-                })
-
-            # Step 5: Sort trajectory data by timestamp
-            trajectory_data.sort(key=lambda x: x['timestamp'])
-
-            # Step 6: Update the start and end times
-            new_start_time = trajectory_data[0]['timestamp']
-            new_end_time = trajectory_data[-1]['timestamp']
-
-            # Step 7: Apply the update to the trajectory
-            self.trajectories_col.update_one({'_id': trajectory['_id']},
-                                             {"$set": {
-                                                'trajectory_data': trajectory_data,
-                                                'start_time': new_start_time,
-                                                'end_time': new_end_time}},
-                                                upsert=True)
-            
-            # Step 8: Delete the old vehicle trajectory
-            self.trajectories_col.delete_one({'vehicle_id': old_vid})
-                        
-            if self.verbose: self.logger.debug(f"Updated trajectory for vehicle {new_vid} with {len(new_bboxes)} new bounding boxes from vehicle {old_vid}.")
+        # Step 9: Delete the old vehicle trajectory
+        self.trajectories_col.delete_one({'vehicle_id': old_vid})
+                
+        if self.verbose: self.logger.debug(f"Updated trajectory for Vehicle {new_vid} with info coming from Vehicle {old_vid}.")
 
     def remove_vehicle(self, vehicle_id):
         if self.verbose: self.logger.debug(f"Removing vehicle with ID: {vehicle_id}")
@@ -185,10 +204,10 @@ class Database():
                 '_id': 0, 
                 'vehicle_id': 1, 
                 'camera_id': 1,
-                "trajectory_data._id": 1,
-                'trajectory_data.cropped_image': 1,
-                'trajectory_data.shape': 1, 
-                'trajectory_data.features': 1
+                # "trajectory_data._id": 1,
+                # 'trajectory_data.compressed_image': 1,
+                # 'trajectory_data.shape': 1, 
+                # 'trajectory_data.features': 1
             }
         }])
 
@@ -198,40 +217,71 @@ class Database():
         # Iterate over the query results and construct the dictionary
         for x in db_frames:
             vehicle_id = x['vehicle_id']
-            trajectory_data = x['trajectory_data']
             #camera_id = x['camera_id']
 
+            # from the trajectory_data._id, we must query the bbox collection to get the compressed_image, shape, and features
+            trajectory_data = self.bboxes_col.aggregate([
+                {'$match': {'vehicle_id': vehicle_id}},
+                {
+                    '$project': {
+                        '_id': 1,
+                        'compressed_image': 1,
+                        'shape': 1,
+                        'features': 1
+                    }
+                }
+            ])
+
             # Create a dictionary for each vehicle, mapping bbox_id to features
-            frames_dict[vehicle_id] = {data['_id']: [data['features'], data['cropped_image'], data['shape']] for data in trajectory_data}
+            frames_dict[vehicle_id] = {data['_id']: [data['features'], data['compressed_image'], data['shape']] for data in trajectory_data}
 
         return frames_dict
 
     def get_camera_frames(self, camera_id):
-        db_frames = self.trajectories_col.aggregate([
-        {'$match': {'camera_id': camera_id}},
-        {
-            '$project': {
-                '_id': 0, 
-                'vehicle_id': 1, 
-                'camera_id': 1,
-                "trajectory_data._id": 1,
-                'trajectory_data.cropped_image': 1,
-                'trajectory_data.shape': 1, 
-                'trajectory_data.features': 1
-            }
-        }])
 
         # Dictionary to store the results
         frames_dict = {}
 
+        db_frames = self.trajectories_col.aggregate([
+        {'$match': {'camera_id': camera_id}},
+        {
+            '$project': {
+                '_id': 1, 
+                'vehicle_id': 1, 
+                'camera_id': 1,
+                # 'trajectory_data.compressed_image': 1,
+                # 'trajectory_data.shape': 1, 
+                # 'trajectory_data.features': 1
+            }
+        }])
+
         # Iterate over the query results and construct the dictionary
-        for x in db_frames:
+        for i, x in enumerate(db_frames):
             vehicle_id = x['vehicle_id']
-            trajectory_data = x['trajectory_data']
             #camera_id = x['camera_id']
 
+            # from the trajectory_data._id, we must query the bbox collection to get the compressed_image, shape, and features
+            traj_data = self.bboxes_col.aggregate([
+                {'$match': {'vehicle_id': vehicle_id}},
+                {
+                    '$project': {
+                        '_id': 1,
+                        'compressed_image': 1,
+                        'shape': 1,
+                        'features': 1,
+                        'frame_number': 1,
+                        'bounding_box': 1,
+                        'timestamp': 1,
+                        'confidence': 1,
+                        'vehicle_id': 1
+                    }
+                }
+            ])
+
             # Create a dictionary for each vehicle, mapping bbox_id to features
-            frames_dict[vehicle_id] = {data['_id']: [data['features'], data['cropped_image'], data['shape']] for data in trajectory_data}
+            frames_dict[vehicle_id] = {data['_id']: [data['features'], data['compressed_image'], data['shape'],
+                                                     data['frame_number'], data['bounding_box'], data['timestamp'],
+                                                     data['confidence'], data['vehicle_id']] for data in traj_data}
 
         return frames_dict
     
@@ -245,11 +295,11 @@ class Database():
                     'camera_id': 1,
                     'start_time': 1,
                     'end_time': 1,
-                    "trajectory_data._id": 1,
-                    'trajectory_data.cropped_image': 1,
-                    'trajectory_data.shape': 1, 
-                    'trajectory_data.features': 1,
-                    'trajectory_data.bounding_box': 1
+                    # "trajectory_data._id": 1,
+                    # 'trajectory_data.compressed_image': 1,
+                    # 'trajectory_data.shape': 1, 
+                    # 'trajectory_data.features': 1,
+                    # 'trajectory_data.bounding_box': 1
                 }
             }
         ])
@@ -260,7 +310,20 @@ class Database():
         # Iterate over the query results and construct the dictionary
         for x in db_frames:
             vehicle_id = x['vehicle_id']
-            trajectory_data = x['trajectory_data']
+
+            # from the trajectory_data._id, we must query the bbox collection to get the compressed_image, shape, and features
+            traj_data = self.bboxes_col.aggregate([
+                {'$match': {'vehicle_id': vehicle_id}},
+                {
+                    '$project': {
+                        '_id': 1,
+                        'compressed_image': 1,
+                        'shape': 1,
+                        'features': 1,
+                        'bounding_box': 1
+                    }
+                }
+            ])
 
             # Create a dictionary for each vehicle, mapping bbox_id to features
             if vehicle_id not in frames_dict:
@@ -269,10 +332,10 @@ class Database():
             # Modify this part in your code
             frames_dict[vehicle_id] = {data['_id']: {
                 'features': data['features'],
-                'cropped_image': data['cropped_image'],
+                'compressed_image': data['compressed_image'],
                 'shape': data['shape'],
                 'bounding_box': data['bounding_box']
-            } for data in trajectory_data}
+            } for data in traj_data}
 
         return frames_dict
 
@@ -286,11 +349,11 @@ class Database():
                     'camera_id': 1,
                     'start_time': 1,
                     'end_time': 1,
-                    "trajectory_data._id": 1,
-                    'trajectory_data.features': 1,
-                    'trajectory_data.cropped_image': 1,
-                    'trajectory_data.shape': 1, 
-                    'trajectory_data.bounding_box': 1,
+                    # "trajectory_data._id": 1,
+                    # 'trajectory_data.features': 1,
+                    # 'trajectory_data.compressed_image': 1,
+                    # 'trajectory_data.shape': 1, 
+                    # 'trajectory_data.bounding_box': 1,
                 }
             }
         ])
@@ -301,11 +364,26 @@ class Database():
             camera_id = x['camera_id']
             start_time = x['start_time']
             end_time = x['end_time']
-            trajectory_data = x['trajectory_data']            
+            # trajectory_data = x['trajectory_data']            
+
+            # from the trajectory_data._id, we must query the bbox collection to get the compressed_image, shape, and features
+            trajectory_data = self.bboxes_col.aggregate([
+                {'$match': {'vehicle_id': vehicle_id}},
+                {
+                    '$project': {
+                        '_id': 1,
+                        'compressed_image': 1,
+                        'shape': 1,
+                        'features': 1,
+                        'bounding_box': 1,
+                        'timestamp': 1
+                    }
+                }
+            ])
 
             return {'vehicle_id': vehicle_id, 'camera_id': camera_id,
                     'start_time': start_time, 'end_time': end_time,
-                    'trajectory_data': {data['_id']: [data['features'], data['cropped_image'], data['shape'], data['bounding_box']] for data in trajectory_data}}
+                    'trajectory_data': {data['_id']: [data['features'], data['compressed_image'], data['shape'], data['bounding_box'], data['timestamp']] for data in trajectory_data}}
 
     def get_vehicle_trajectory(self, vehicle_id):
         db_frames = self.trajectories_col.aggregate([
@@ -317,11 +395,11 @@ class Database():
                     'camera_id': 1,
                     'start_time': 1,
                     'end_time': 1,
-                    "trajectory_data._id": 1,
-                    'trajectory_data.features': 1,
-                    'trajectory_data.cropped_image': 1,
-                    'trajectory_data.shape': 1, 
-                    'trajectory_data.bounding_box': 1,
+                    # "trajectory_data._id": 1,
+                    # 'trajectory_data.features': 1,
+                    # 'trajectory_data.compressed_image': 1,
+                    # 'trajectory_data.shape': 1, 
+                    # 'trajectory_data.bounding_box': 1,
                 }
             }
         ])
@@ -340,7 +418,20 @@ class Database():
             camera_id = x['camera_id']
             start_time = x['start_time']
             end_time = x['end_time']
-            trajectory_data = x['trajectory_data']
+
+            # from the trajectory_data._id, we must query the bbox collection to get the compressed_image, shape, and features
+            trajectory_data = self.bboxes_col.aggregate([
+                {'$match': {'vehicle_id': vehicle_id}},
+                {
+                    '$project': {
+                        '_id': 1,
+                        'compressed_image': 1,
+                        'shape': 1,
+                        'features': 1,
+                        'bounding_box': 1
+                    }
+                }
+            ])
 
             if vehicle_id not in frames_dict:
                 frames_dict[traj_id] = {}
@@ -350,7 +441,7 @@ class Database():
                                     'camera_id': camera_id,
                                     'start_time': start_time,
                                     'end_time': end_time,
-                                    'trajectory_data': {data['_id']: [data['features'], data['cropped_image'], data['shape'], data['bounding_box']] for data in trajectory_data}}
+                                    'trajectory_data': {data['_id']: [data['features'], data['compressed_image'], data['shape'], data['bounding_box']] for data in trajectory_data}}
 
             return frames_dict
 
@@ -361,10 +452,10 @@ class Database():
                     '_id': 0, 
                     'vehicle_id': 1, 
                     'camera_id': 1,
-                    "trajectory_data._id": 1,
-                    'trajectory_data.cropped_image': 1,
-                    'trajectory_data.shape': 1, 
-                    'trajectory_data.features': 1
+                    # "trajectory_data._id": 1,
+                    # 'trajectory_data.compressed_image': 1,
+                    # 'trajectory_data.shape': 1, 
+                    # 'trajectory_data.features': 1
                 }
             }
         ])
@@ -376,13 +467,28 @@ class Database():
         for x in db_frames:
             vehicle_id = x['vehicle_id']
             camera_id = x['camera_id']
-            trajectory_data = x['trajectory_data']
+
+            # from the trajectory_data._id, we must query the bbox collection to get the compressed_image, shape, and features
+            trajectory_data = self.bboxes_col.aggregate([
+                {'$match': {'vehicle_id': vehicle_id}},
+                {
+                    '$project': {
+                        '_id': 1,
+                        'frame_number': 1,
+                        'compressed_image': 1,
+                        'shape': 1,
+                        'features': 1,
+                        'timestamp': 1,
+                        'bounding_box': 1
+                    }
+                }
+            ])
 
             # Create a dictionary for each camera and vehicle, mapping bbox_id to features
             if camera_id not in frames_dict:
                 frames_dict[camera_id] = {}
 
-            frames_dict[camera_id][vehicle_id] = {data['_id']: [data['features'], data['cropped_image'], data['shape']] for data in trajectory_data}
+            frames_dict[camera_id][vehicle_id] = {data['_id']: [data['frame_number'], data['bounding_box'], data['features'], data['compressed_image'], data['shape'], data['timestamp']] for data in trajectory_data}
 
         return frames_dict
     

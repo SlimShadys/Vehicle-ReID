@@ -103,16 +103,11 @@ class AICity():
 
             # Extract the vehicle ID
             vehicle_id_str = item.get('vehicleID')
-            try:
+            if vehicle_id_str is None:
+                car_id_num = -1
+            else:
                 car_id_num = int(re.search(r'\d+', vehicle_id_str).group()) - 1 # Subtract 1 to start from 0
-                if sim:
-                    car_id_num += len_train + 1
-            except:
-                car_id_num = -2 # Test and Query images do not have vehicle ID
-
-            # Various checks to ensure the data is correct
-            if car_id_num == -1:
-                continue  # Junk images are just ignored
+                if sim: car_id_num += len_train + 1
 
             item_info = {
                 'vehicle_ID': car_id_num,
@@ -181,7 +176,7 @@ class AICity():
         # Combine all car IDs from train, query, and gallery sets
         all_car_ids = {car_id for _, _, car_id, _, _, _, _, _ in self.train}
         # Get the unique car IDs
-        return len(all_car_ids) + 1 # Add 1 to account for the 0-indexing
+        return len(all_car_ids)
     
 class AICitySim():
     def __init__(self, data_path, use_rptm=False):
@@ -329,4 +324,4 @@ class AICitySim():
         # Combine all car IDs from train, query, and gallery sets
         all_car_ids = {car_id for _, _, car_id, _, _, _, _, _ in self.train}
         # Get the unique car IDs
-        return len(all_car_ids) + 1 # Add 1 to account for the 0-indexing
+        return len(all_car_ids) # Add 1 to account for the 0-indexing

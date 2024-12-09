@@ -121,9 +121,10 @@ def stationary_filtering(frames, frame_size, stationary_threshold, min_stationar
 
     # Calculate the centroids of the bounding boxes over time
     for frame in frames:
-        x1, y1, x2, y2 = map(int, frame['bounding_box'])
-        centroid_x = (x1 + x2) / 2
-        centroid_y = (y1 + y2) / 2
+        tx, ty, w, h = frame['bounding_box'] # Get bounding box coordinates (tlwh)
+        # Calculate centroid
+        centroid_x = tx + w / 2
+        centroid_y = ty + h / 2
         centroids.append((centroid_x, centroid_y))
 
     # Calculate the movement of the centroid between frames

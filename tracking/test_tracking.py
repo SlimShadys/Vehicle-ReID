@@ -99,6 +99,8 @@ num_classes = {
 misc_cfg = cfg_file.MISC
 reid_cfg = cfg_file.REID
 tracking_cfg = cfg_file.TRACKING
+tracker_cfg = cfg_file.TRACKER
+yolo_cfg = cfg_file.YOLO
 db_cfg = cfg_file.DB
 
 # Device Configuration
@@ -127,14 +129,24 @@ use_roi_mask = tracking_cfg.USE_ROI_MASK
 roi_mask_path = tracking_cfg.ROI_MASK_PATH
 
 # ========================== LOAD YOLO MODEL ========================== #
-yolo_model = load_yolo(tracking_cfg)
-input_path = tracking_cfg.VIDEO_PATH
-tracked_classes = tracking_cfg.MODEL.TRACKED_CLASS
-conf_thresh = tracking_cfg.MODEL.CONFIDENCE_THRESHOLD
-yolo_img_size = tracking_cfg.MODEL.YOLO_IMAGE_SIZE
-yolo_iou_threshold = tracking_cfg.MODEL.YOLO_IOU_THRESHOLD
-use_agnostic_nms = tracking_cfg.MODEL.USE_AGNOSTIC_NMS
-tracker_yaml_file = tracking_cfg.MODEL.YOLO_TRACKER
+yolo_model = load_yolo(cfg_file)
+
+# =========================== YOLO =========================== #
+tracked_classes     = yolo_cfg.TRACKED_CLASS
+conf_thresh         = yolo_cfg.CONFIDENCE_THRESHOLD
+yolo_img_size       = yolo_cfg.YOLO_IMAGE_SIZE
+yolo_iou_threshold  = yolo_cfg.YOLO_IOU_THRESHOLD
+use_agnostic_nms    = yolo_cfg.USE_AGNOSTIC_NMS
+verbose             = yolo_cfg.VERBOSE
+# ========================== Tracker ========================= #
+tracker_model       = tracker_cfg.MODEL.NAME
+tracker_yaml_file   = tracker_cfg.YOLO_TRACKER
+persist             = tracker_cfg.PERSIST
+# =========================== Misc ============================ #
+input_path          = tracking_cfg.VIDEO_PATH
+use_roi_mask        = tracking_cfg.USE_ROI_MASK
+roi_mask_path       = tracking_cfg.ROI_MASK_PATH
+# ============================================================ #
 
 # ========================== LOAD COLOR MODEL ========================== #
 model_configs = reid_cfg.MODEL
@@ -306,7 +318,7 @@ with tqdm(total=total_n_frames, desc="Processing Video", unit="frame") as pbar:
         results = yolo_model.track(frame, classes=list([idx for idx, _ in tracked_classes]), conf=conf_thresh,
                                     imgsz=yolo_img_size, iou=yolo_iou_threshold,
                                     agnostic_nms=use_agnostic_nms, tracker=tracker_yaml_file,
-                                    device=device, persist=True, verbose=False)
+                                    device=device, persist=persist, verbose=verbose)
         
         end_time_yolo = time.perf_counter()
 
@@ -334,19 +346,20 @@ with tqdm(total=total_n_frames, desc="Processing Video", unit="frame") as pbar:
                 center_x = x0 + ((x1 - x0) / 2)
                 center_y = y0 + ((y1 - y0) / 2)
 
-                x = Image.fromarray(orig_frame[y0:y1, x0:x1])                                   # Convert to PIL Image
-                #x.save(f"./tracking/{frame_number}_{track_id}.jpg")
-                tensor_x = transforms.val_transform(x)                                          # Convert to torch.Tensor
-                tensor_x = tensor_x.unsqueeze(0).float().to(device)                             # Convert to Tensor and send to device
+                # x = Image.fromarray(orig_frame[y0:y1, x0:x1])                                   # Convert to PIL Image
+                # #x.save(f"./tracking/{frame_number}_{track_id}.jpg")
+                # tensor_x = transforms.val_transform(x)                                          # Convert to torch.Tensor
+                # tensor_x = tensor_x.unsqueeze(0).float().to(device)                             # Convert to Tensor and send to device
 
-                # EfficientNet
-                if isinstance(color_model, EfficientNet):
-                    prediction = color_model.predict(tensor_x)
-                    color_prediction = [entry['color'] for entry in prediction]
-                # ResNet + SVM
-                elif isinstance(color_model, SVM):
-                    svm_embedding = model(tensor_x).detach().cpu().numpy()
-                    color_prediction = color_model.predict(svm_embedding)
+                # # EfficientNet
+                # if isinstance(color_model, EfficientNet):
+                #     prediction = color_model.predict(tensor_x)
+                #     color_prediction = [entry['color'] for entry in prediction]
+                # # ResNet + SVM
+                # elif isinstance(color_model, SVM):
+                #     svm_embedding = model(tensor_x).detach().cpu().numpy()
+                #     color_prediction = color_model.predict(svm_embedding)
+                color_prediction = "Unknown"
 
                 # Append the center of the bounding box and the color prediction to the track history
                 track.append(((center_x, center_y), color_prediction))
@@ -415,7 +428,7 @@ with tqdm(total=total_n_frames, desc="Processing Video", unit="frame") as pbar:
             writer.append_data(annotated_frame)
 
         # Display the annotated frame
-        window_name = f"{tracking_cfg.MODEL.YOLO_MODEL_NAME} Tracking"
+        window_name = f"{tracker_model} - Test Tracking"
         cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
         # cv2.moveWindow(window_name, 900, 900)
         cv2.imshow(window_name, cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR))
@@ -423,6 +436,8 @@ with tqdm(total=total_n_frames, desc="Processing Video", unit="frame") as pbar:
         # Break the loop if 'q' is pressed
         if cv2.waitKey(1) & 0xFF == ord("q"):
             break
+
+        pbar.update(1)
     
 # Release the video reader and writer
 if not is_frames: reader.close()

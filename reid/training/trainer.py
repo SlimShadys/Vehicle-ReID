@@ -299,7 +299,13 @@ class Trainer:
         self.model.train()
 
         for batch_idx, (img_path, img, folders, indices, car_id, cam_id, model_id, color_id, type_id, timestamp) in tqdm(enumerate(self.train_loader), total=len(self.train_loader), desc=f"Epoch {epoch}/{self.epochs}"):
-            img, car_id = img.to(self.device), car_id.to(self.device)
+            img, car_id = img, car_id.to(self.device)
+
+            # Move the images to the device
+            if type(img) == list or type(img) == tuple:
+                img = [im.to(self.device) for im in img]
+            else:
+                img = img.to(self.device)
 
             # Equivalent to: self.optimizer.zero_grad()
             # But explicitly setting the gradients to None for each parameter
@@ -307,10 +313,27 @@ class Trainer:
             self.optimizer.zero_grad(set_to_none=True)
 
             with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=self.use_amp):
+                
                 # Forward pass on the Network
                 # Up to the last Linear layer for the ID prediction (ID loss)
                 # Up to the last Conv layer for the Embeddings (Metric loss)
-                embeddings, pred_ids = self.model(img, training=True)
+                if self.augmentation_configs.PADDING_MODE == 'centered':
+                    # Here we do enter only if padding mode is 'centered'
+                    # where images have all the same size
+                    embeddings, pred_ids = self.model(img, training=True)
+                    embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+                else: # Padding mode is either 'aspect_ratio' or None
+                    outputs, pred_ids = [], []
+                    for im in img:
+                        im = im.unsqueeze(0) if len(im.shape) == 3 else im
+                        embeddings, pred_id = self.model(im, training=True)
+                        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+
+                        outputs.append(embeddings)
+                        pred_ids.append(pred_id)
+
+                    embeddings = torch.cat(outputs)
+                    pred_ids = torch.cat(pred_ids)
 
                 # Loss
                 ID_loss, metric_loss = self.loss_fn.forward(embeddings, pred_ids, car_id, normalize=False, use_rptm=False)
@@ -392,13 +415,36 @@ class Trainer:
 
         with torch.no_grad():
             for i, (img_path, img, folders, indices, car_id, cam_id, model_id, color_id, type_id, timestamp) in tqdm(enumerate(self.val_loader), total=len(self.val_loader), desc="Running Validation"):
-                img, car_id, cam_id, color_id = img.to(self.device), car_id.to(self.device), cam_id.to(self.device), color_id.to(self.device)
+                img, car_id = img, car_id.to(self.device)
 
+                # Move the images to the device
+                if type(img) == list or type(img) == tuple:
+                    img = [im.to(self.device) for im in img]
+                else:
+                    img = img.to(self.device)
+                    
                 if 'reid' in metrics:
                     self.model.eval()
                     with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=self.use_amp):
-                        feat = self.model(img, training=False).detach().cpu()
-                        features.append(feat)
+
+                        # Forward pass on the Network
+                        # Up to the last Conv layer for the Embeddings (Metric loss)
+                        if self.augmentation_configs.PADDING_MODE == 'centered':
+                            # Here we do enter only if padding mode is 'centered'
+                            # where images have all the same size
+                            embeddings = self.model(img, training=False)
+                            embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1).detach().cpu()
+                        else: # Padding mode is either 'aspect_ratio' or None
+                            outputs = []
+                            for im in img:
+                                im = im.unsqueeze(0) if len(im.shape) == 3 else im
+                                embeddings = self.model(im, training=False)
+                                embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1).detach().cpu()
+
+                                outputs.append(embeddings)
+                            embeddings = torch.cat(outputs)
+
+                    features.append(embeddings)
 
                 if 'color' in metrics:
                     # Run the color model

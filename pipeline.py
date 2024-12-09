@@ -22,80 +22,235 @@
 # - Print a summary of the filtering                                            -> Done
 # - Release the video capture and destroy all OpenCV windows                    -> Done
 # - Print a message to indicate the end of the pipeline                         -> Done
-# - Update trajectories, bounding boxes, and vehicles in the database           -> 90% (final testing needed)
-# - Create Graphs for the trajectories                                          -> 90%
-# - Create Target Search Engine                                                 -> 0%
+# - Update trajectories, bounding boxes, and vehicles in the database           -> Done
+# - Link trajectories together and run MOTA metrics                             -> Done
+# - Create Target Search Engine                                                 -> Done
 # - Create a GUI for the pipeline                                               -> 0%
 
-import argparse
-from datetime import datetime
 import gc
 import os
+import pickle
+import random
 import re
 import shutil
+import time
+from datetime import datetime
 
 import bson
 import cv2
 import imageio.v3 as iio
-import networkx as nx
 import numpy as np
 import pandas as pd
 import torch
 from matplotlib import pyplot as plt
-from PIL import Image
+from PIL import Image, ImageOps
 from torchvision import transforms as T
 from tqdm import tqdm
-import yaml
 
 from config import _C as cfg_file
 from db.database import Database
-from graph.model import GraphEngine
 from misc.printer import Logger
-from misc.utils import (compare_trajectories, compress_img,
-                        cosine_similarity_np, create_mask, decompress_img,
-                        euclidean_dist, extract_numeric_id, load_middle_frame,
-                        remove_below_threshold, sample_trajectory_frames,
-                        set_seed)
+from misc.timer import PerformanceTimer
+from misc.utils import (compress_img, create_mask, decompress_img,
+                        sample_trajectory_frames, set_seed)
 from reid.datasets.transforms import Transformations
 from reid.model import ModelBuilder
+from tracking.cameras import CameraLayout
 from tracking.filter import filter_frames
 from tracking.model import load_yolo
+from tracking.track import Track, Trajectory
 from tracking.unification import get_max_similarity_per_vehicle
-from misc.timer import PerformanceTimer
+
+
+def fliplr(img):
+    """ flip a batch of images horizontally """
+    # N x C x H x W
+    inv_idx = torch.arange(img.size(3) - 1, -1, -1).long()
+    img_flip = img.index_select(3, inv_idx)
+    return img_flip
+
+def extract_image_patch(image, bbox, patch_shape=None):
+    """Extract an image patch (defined by a bounding box) from an image
+    Parameters
+    ----------
+    image : torch.tensor | ndarray
+        The full image (3 dimensions, with an RGB or grayscale channel).
+    bbox : array_like
+        The bounding box in format (tx, ty, width, height).
+    patch_shape : Optional[array_like]
+        This parameter can be used to enforce a desired patch shape
+        (height, width). First, the `bbox` is adapted to the aspect ratio
+        of the patch shape, then it is clipped at the image boundaries.
+        If None, the shape is computed from :arg:`bbox`.
+    Returns
+    -------
+    ndarray | NoneType
+        An image patch showing the :arg:`bbox`, optionally reshaped to
+        :arg:`patch_shape`.
+        Returns None if the bounding box is empty or fully outside of the image
+        boundaries.
+    """
+
+    if len(image.shape) != 3:
+        raise NotImplementedError(
+            "Only image arrays of 3 dimensions are supported.")
+
+    if image.shape[0] <= 3:
+        ch, h, w = image.shape
+    elif image.shape[2] <= 3:
+        h, w, ch = image.shape
+    else:
+        raise ValueError(
+            "Input image does not contain an RGB or gray channel.")
+
+    bbox = np.array(bbox)
+    if patch_shape is not None:
+        # correct aspect ratio to patch shape
+        target_aspect = float(patch_shape[1]) / patch_shape[0]
+        new_width = target_aspect * bbox[3]
+        bbox[0] -= (new_width - bbox[2]) / 2
+        bbox[2] = new_width
+
+    # convert to top left, bottom right
+    bbox[2:] += bbox[:2]
+    bbox = bbox.astype(np.int32)
+
+    # clip at image boundaries
+    bbox[:2] = np.maximum(0, bbox[:2])
+    bbox[2:] = np.minimum([w, h], bbox[2:])
+
+    if np.any(bbox[:2] >= bbox[2:]):
+        return None
+    sx, sy, ex, ey = bbox
+
+    if image.shape[0] <= 3:
+        image = image[:, sy:ey, sx:ex]
+    else:
+        image = image[sy:ey, sx:ex, :]
+    return image
 
 # Various configs
+augmentation_cfg = cfg_file.REID.AUGMENTATION
 misc_cfg = cfg_file.MISC
 reid_cfg = cfg_file.REID
 tracking_cfg = cfg_file.TRACKING
+tracker_cfg = cfg_file.TRACKER
+yolo_cfg = cfg_file.YOLO
+detector_cfg = cfg_file.DETECTOR
 db_cfg = cfg_file.DB
+
+# Number of classes in each dataset (Only for ID classification tasks, hence only training set is considered)
 num_classes = {
+    'ai_city': 440,
+    'ai_city_sim': 1802,
+    'vehicle_id': 13164,
     'veri_776': 576,
     'veri_wild': 30671,
-    'vehicle_id': 13164,
+    'vric': 2811,
     'vru': 7086,
 }
 
 # SIMILARITY_THRESHOLD
-similarity_threshold = 0.60 # 0.69
+similarity_threshold = 0.60
 removing_threshold = 0.60
 comparing_threshold = 0.60
+
+def any_compatible(mtrack1, mtrack2, cams) -> bool:
+    """Is there a pair of tracks between mtrack1 and mtrack2 that are compatible?"""
+    for track1 in mtrack1.tracks:
+        for track2 in mtrack2.tracks:
+            if tracks_compatible(track1, track2, cams):
+                return True
+    return False
+
+def have_mutual_cams(mtrack1, mtrack2) -> bool:
+    """Checks whether two mutlicam tracklets share any cameras."""
+    return bool(mtrack1.cams & mtrack2.cams)
+
+def tracks_compatible(track1, track2, cams) -> bool:
+    """Check whether two tracks can be connected to each other."""
+    cam1, cam2 = track1.cam, track2.cam
+
+    # if there is no cam layout, we only check if the tracks are on the same camera
+    if cams is None:
+        return cam1 != cam2
+    
+    # same camera -> they cannot be connected
+    if cam1 == cam2:
+        return False
+
+    t1_start, t1_end = track1.start_time, track1.end_time
+    t2_start, t2_end = track2.start_time, track2.end_time
+
+    # is track1 -> track2 transition possible?
+    # for this, [t2_start, t2_end] has to intersect with interval I = [t1_end + dtmin, t1_end + dtmax]
+    # that is: track2 starts before I ends and I starts before track2 ends
+    if (cams.cam_compatibility_bitmap(cam1) & (1 << cam2) > 0) and \
+       t2_start <= t1_end + cams.dtmax[cam1][cam2] and \
+       t1_end + cams.dtmin[cam1][cam2] <= t2_end:
+        return True
+
+    # check the track2 -> track1 transition too
+    if (cams.cam_compatibility_bitmap(cam2) & (1 << cam1) > 0) and \
+       t1_start <= t2_end + cams.dtmax[cam2][cam1] and \
+       t2_end + cams.dtmin[cam2][cam1] <= t1_end:
+        return True
+    return False
+
+# These are MultiTracks
+def compute_similarity(track1, track2, linkage, already_normed, df):
+    if linkage == "mean_feature":
+        f1 = track1.mean_feature
+        f2 = track2.mean_feature
+        if already_normed:
+            return np.dot(f1, f2)
+        else:
+            return np.dot(f1, f2) / np.linalg.norm(f1, 2) / np.linalg.norm(f2, 2)
+    
+    # We must retrieve the similarities between all pairs of frames in the DataFrames
+    all_sims = []
+    for t1 in track1.tracks:
+        for t2 in track2.tracks:
+            all_sims.append(df.iloc[t1.id, t2.id])
+
+    if linkage == "average":
+        return np.mean(all_sims)
+    if linkage == "single":
+        return np.max(all_sims)
+    if linkage == "complete":
+        return np.min(all_sims)
 
 def load_models_and_transformations(device, cfg):
     """Load YOLO, ReID model, color model, and transformations."""
     # Load YOLO model
-    yolo_model = load_yolo(cfg.TRACKING)
+    yolo_model = load_yolo(cfg)
+    yolo_model = yolo_model.to(device)
 
     # Load ReID Model
     dataset_name = reid_cfg.DATASET.DATASET_NAME
-    model_builder = ModelBuilder(
+
+    # ================================================================
+    cfg.REID.MODEL.PADDING_MODE = cfg.REID.AUGMENTATION.PADDING_MODE
+    reid_model = ModelBuilder(
         model_name=cfg.REID.MODEL.NAME,
         pretrained=cfg.REID.MODEL.PRETRAINED,
         num_classes=num_classes[dataset_name],
         model_configs=cfg.REID.MODEL,
         device=device
-    )
-    model = model_builder.move_to(device)
-    model.eval()
+    ).move_to(device)
+
+    # Load parameters from a .pth file
+    val_path = cfg.REID.TEST.MODEL_VAL_PATH
+    if (val_path is not None):
+        print("Loading model parameters from file...")
+        if ('ibn' in cfg.REID.MODEL.NAME):
+            reid_model.load_param(val_path)
+        else:
+            checkpoint = torch.load(val_path, map_location=device)
+            reid_model.load_state_dict(checkpoint['model'])
+        print(f"Successfully loaded model parameters from file: {val_path}")
+
+    reid_model.eval() # Set the model to evaluation mode
 
     # Load Color Model
     car_classifier = ModelBuilder(
@@ -108,7 +263,7 @@ def load_models_and_transformations(device, cfg):
     
     # Load Transformations
     transforms = Transformations(dataset=None, configs=cfg.REID.AUGMENTATION)
-    return yolo_model, model, car_classifier, transforms
+    return yolo_model, reid_model, car_classifier, transforms
 
 def load_config_and_device(config_path=None):
     """Load config, initialize device and set seed."""
@@ -119,66 +274,68 @@ def load_config_and_device(config_path=None):
         device = f"{device}:{cfg_file.MISC.GPU_ID}"
     else:
         device = 'cpu'
-    set_seed(cfg_file.MISC.SEED)
     return cfg_file, device
 
 def setup_database():
     """Initialize the database connection."""
     logger = Logger()
-    db = Database(db_configs=cfg_file.DB, logger=logger)
-    if cfg_file.DB.CLEAN_DB:
-        logger.debug("Cleaning the database...")
-        db.clean()
+    db = None
+    if cfg_file.DB.USE_DB:
+        db = Database(db_configs=cfg_file.DB, logger=logger)
+
+        if cfg_file.DB.CLEAN_DB:
+            logger.debug("Cleaning the database...")
+            db.clean()
     return db
 
-def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data):
+def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data, db, logger):
     """Run the pipeline for a single camera, used in both MTSC and MTMC."""
-    # Load Logger
-    logger = Logger()
+    # Set seed
+    set_seed(cfg_file.MISC.SEED)
 
     # Load PerformanceTimer
     perf_timer = PerformanceTimer()
 
     # DB connection
     USE_DB = db_cfg.USE_DB
-    reid_DB = Database(db_configs=db_cfg, logger=logger) if USE_DB else None
+    reid_DB = db if USE_DB else None
 
     # Get the similarity method to use
     similarity_algorithm    = reid_cfg.TEST.SIMILARITY_ALGORITHM    # 'cosine' / 'euclidean'
-    similarity_method       = reid_cfg.TEST.SIMILARITY_METHOD       # 'individual' / 'mean'
+    unification_method      = reid_cfg.TEST.UNIFICATION_METHOD      # 'mean' / 'max'
 
     # If GT is available, we must run MOTA metrics
     cfg_file.TRACKING.GT = camera_data.get('gt', None)
     if cfg_file.TRACKING.GT:
         date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        output_file = f'predictions_camera-{camera_data["_id"]}_{date}.txt'
-        res = {
-            "frame": [],
-            "track_id": [],
-            "bbox_topleft_x": [],
-            "bbox_topleft_y": [],
-            "bbox_width": [],
-            "bbox_height": [],
-        }
+        output_file = f'MTSC-predictions_camera-{camera_data["_id"]}_{date}.txt'
+
+        pickle_global_path = cfg_file.MTMC.PICKLE_GLOBAL_PATH
+        if not os.path.exists(pickle_global_path):
+            os.makedirs(pickle_global_path, exist_ok=True)
 
     if misc_cfg.RUN_PIPELINE:
         # Configure camera-specific parameters
-        cfg_file.TRACKING.VIDEO_PATH = camera_data['path']
-        cfg_file.TRACKING.ROI_MASK_PATH = camera_data.get('roi', None)
+        tracking_cfg.VIDEO_PATH     = camera_data['path']
+        tracking_cfg.ROI_MASK_PATH  = camera_data.get('roi', None)
 
-        # ========================== YOLO ========================== #
+        # =========================== YOLO =========================== #
+        tracked_classes     = yolo_cfg.TRACKED_CLASS
+        conf_thresh         = yolo_cfg.CONFIDENCE_THRESHOLD
+        yolo_img_size       = yolo_cfg.YOLO_IMAGE_SIZE
+        yolo_iou_threshold  = yolo_cfg.YOLO_IOU_THRESHOLD
+        use_agnostic_nms    = yolo_cfg.USE_AGNOSTIC_NMS
+        verbose             = yolo_cfg.VERBOSE
+        # ========================== Tracker ========================= #
+        tracker_model       = tracker_cfg.MODEL.NAME
+        tracker_yaml_file   = tracker_cfg.YOLO_TRACKER
+        persist             = tracker_cfg.PERSIST
+        # =========================== Misc ============================ #
         input_path          = tracking_cfg.VIDEO_PATH
-        tracked_classes     = tracking_cfg.MODEL.TRACKED_CLASS
-        conf_thresh         = tracking_cfg.MODEL.CONFIDENCE_THRESHOLD
-        yolo_img_size       = tracking_cfg.MODEL.YOLO_IMAGE_SIZE
-        yolo_iou_threshold  = tracking_cfg.MODEL.YOLO_IOU_THRESHOLD
-        use_agnostic_nms    = tracking_cfg.MODEL.USE_AGNOSTIC_NMS
-        tracker_yaml_file   = tracking_cfg.MODEL.YOLO_TRACKER
         use_roi_mask        = tracking_cfg.USE_ROI_MASK
         roi_mask_path       = tracking_cfg.ROI_MASK_PATH
-        input_path          = cfg_file.TRACKING.VIDEO_PATH
-        tracked_classes     = cfg_file.TRACKING.MODEL.TRACKED_CLASS
-        
+        # ============================================================ #
+    
         # Check if the path exists
         is_frames = False
         if not os.path.exists(input_path):
@@ -297,10 +454,10 @@ def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data)
                 results = yolo_model.track(frame, classes=list([idx for idx, _ in tracked_classes]), conf=conf_thresh,
                                             imgsz=yolo_img_size, iou=yolo_iou_threshold,
                                             agnostic_nms=use_agnostic_nms, tracker=tracker_yaml_file,
-                                            device=device, persist=True, verbose=False)
+                                            device=device, persist=persist, verbose=verbose)
 
                 # Extract bounding boxes, classes, names, and confidences
-                boxes = results[0].boxes.xyxy.tolist()
+                boxes = results[0].boxes.xywh.tolist() # XYWH = CenterX, CenterY, Width, Height
                 classes = results[0].boxes.cls.tolist()
                 ids = results[0].boxes.id.tolist() if results[0].boxes.id is not None else [-1] * len(classes)
                 names = results[0].names
@@ -311,12 +468,20 @@ def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data)
                     if id == -1:
                         continue # Skip the object if the tracker does not detect it
                     else:
-                        x1, y1, x2, y2 = box  # Convert to integers
+                        x, y, w, h = map(int, box) # Convert the bounding box to integers
+
+                        # Convert the bounding box to the tlwh format
+                        #  => (top left x, top left y, width, height)
+                        tlwh_box = [int(round(x - w / 2)), int(round(y - h / 2)), w, h]
+                        tx, ty, tw, th = tlwh_box
+
+                        # Crop the bounding box from the image
+                        crop = orig_frame[ty:ty + th,tx:tx + tw]
+
                         # confidence = conf
                         detected_class = int(cls)
                         name = names[detected_class]
                         id = int(id)
-                        crop = orig_frame[int(y1):int(y2), int(x1):int(x2)]  # Crop the bounding box from the image
 
                         # Add frame info to the chunk dictionary
                         if id not in chunk_dict:
@@ -326,8 +491,9 @@ def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data)
                             'frame_number': frame_number,
                             'class': name,
                             'confidence': conf,
-                            'bounding_box': box,
+                            'bounding_box': tlwh_box, # tlwh format
                             'cropped_image': crop,
+                            'frame': frame,
                             'timestamp': round(timestamp, 2) # Round to 2 decimal places
                         })
                 perf_timer.register_call("YOLO Object Detection + Tracking")
@@ -361,15 +527,18 @@ def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data)
                                           'frames': [frame for frame in frames],}
 
                         # Sample frames from the trajectory to reduce the number of frames stored
-                        if tracking_cfg.SAMPLE_FRAMES:
-                            chunk_dict[id]['frames'] = sample_trajectory_frames(chunk_dict[id]['frames'], min_samples=10, max_samples=80)
-                            
-                            # Remove the ID if there are no frames left
-                            if len(chunk_dict[id]['frames']) == 0:
-                                logger.debug(f"ID {id} has no frames left, removing from the dictionary.")
+                        if tracking_cfg.DELETE_MIN_FRAMES:
+                            # If the number of frames is less than the minimum, return an empty list
+                            if len(chunk_dict[id]['frames']) < 5:
+                                chunk_dict[id]['frames'] = []
+                                #logger.debug(f"ID {id} has no frames left, removing from the dictionary.")
                                 ids_to_remove.append(id)
                                 ids_removed += 1
                                 continue
+
+                        if tracking_cfg.SAMPLE_FRAMES:
+                            chunk_dict[id]['frames'] = sample_trajectory_frames(chunk_dict[id]['frames'], min_samples=5, max_samples=3000)
+                            
                         perf_timer.register_call("Minor filtering")
                     
                     # Update the chunk_dict with the filtered frames
@@ -391,6 +560,8 @@ def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data)
                             # Add this feature to the dictionary for the ID
                             # id -> {class, frames: [{frame1}, {frame2}, ...]}
                             chunk_dict[id]['frames'][i]['features'] = features.detach().cpu().numpy()
+                            del chunk_dict[id]['frames'][i]['frame']
+
                         perf_timer.register_call("Re-ID")
 
                     for id in tqdm(chunk_dict, desc="Trajectory creation", unit="ID", total=len(chunk_dict)):
@@ -434,9 +605,9 @@ def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data)
                                 bbox_id = unique_vehicle_id + f"_F{last_frame + 1}"
 
                             frame['_id'] = bbox_id
-                                
-                        # We need the start time and the ending time, which we can get from the timestamps
-                        # of the first and last frames
+
+                        # We need the start time and the ending time, which we can get
+                        # from the timestamps of the first and last frames
                         start_time = frames[0]['timestamp']
                         end_time = frames[-1]['timestamp']
 
@@ -445,7 +616,7 @@ def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data)
                         perf_timer.register_call("Trajectory creation")
 
                     if USE_DB:
-                        logger.info("Inserting Vehicles, Trajectories & BBoxes into the database...")
+                        # logger.info("Inserting Vehicles, Trajectories & BBoxes into the database...")
                         for id in tqdm(chunk_dict, desc="Inserting Vehicles, Trajectories & BBoxes into the database...", unit="ID", total=len(chunk_dict)):     
                             # Compress both the cropped imgs and the features into a suitable format for MongoDB
                             frames = chunk_dict[id]['frames']
@@ -485,7 +656,7 @@ def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data)
                                     '_id': frame['_id'],
                                     'vehicle_id': unique_vehicle_id,
                                     'compressed_image': frame['compressed_image'],
-                                    'bounding_box': frame['bounding_box'],
+                                    'bounding_box': frame['bounding_box'], # tlwh format
                                     'confidence': frame['confidence'],
                                     #'cropped_image': frame['cropped_image'],
                                     'features': frame['features'],
@@ -507,8 +678,8 @@ def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data)
                                 '_id': chunk_dict[id]['_id'],
                                 'vehicle_id': chunk_dict[id]['vehicle_id'],
                                 'camera_id': chunk_dict[id]['camera_id'],
-                                'start_time': start_time,
-                                'end_time': end_time,
+                                'start_time': chunk_dict[id]['start_time'],
+                                'end_time': chunk_dict[id]['end_time'],
                                 #'trajectory_data': frames,
                             }
 
@@ -562,30 +733,6 @@ def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data)
 
                         logger.info(f"Bounding boxes saved for chunk {frame_number // chunk_size}")
 
-                    # Final insertion of the data in a .txt file
-                    if cfg_file.TRACKING.GT:
-                           for id in chunk_dict:
-                            # Get all relevant information about this ID
-                            data = chunk_dict[id]
-
-                            frames = data['frames']
-
-                            bboxes = [frame['bounding_box'] for frame in frames]
-                            frame_numbers = [frame['frame_number'] for frame in frames]
-                        
-                            # Write formatted output to the file
-                            # ['FrameId', 'Id', 'X', 'Y', 'Width', 'Height', 'Conf', 'Xworld', 'Yworld', 'Zworld']
-                            for bbox, frame_num in zip(bboxes, frame_numbers):
-                                x1, y1, x2, y2 = bbox
-                                width = int(round(x2 - x1))
-                                height = int(round(y2 - y1))
-                                res['frame'].append(frame_num)
-                                res['track_id'].append(id)
-                                res['bbox_topleft_x'].append(int(x1))
-                                res['bbox_topleft_y'].append(int(y1))
-                                res['bbox_width'].append(width)
-                                res['bbox_height'].append(height)
-
                     # After the chunk is stored, Python's garbage collector will handle memory,
                     # but we can also explicitly free memory if necessary.
                     del chunk_dict
@@ -603,7 +750,7 @@ def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data)
             cap.release()
         cv2.destroyAllWindows()
 
-        print("===============================================")
+        logger.info("===============================================")
         logger.info("Pipeline completed successfully! Here's a summary of the results:")
         logger.info(f"\t- Total BBoxes: {total_frames}")
         if USE_FILTERS:
@@ -611,372 +758,664 @@ def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data)
             logger.info(f"\t\t- Frames removed due to color: {color_removed}")
             logger.info(f"\t\t- Frames removed due to stationary vehicles: {stationary_removed}")
             logger.info(f"\t\t- Frames removed due to incomplete bounding boxes: {incomplete_removed}")
-        logger.info(f"\t- Total IDs: {len(set(res['track_id']))}")
+        #logger.info(f"\t- Total IDs: {len(set(res['track_id']))}")
         logger.info(f"\t- IDs removed due to errors: {ids_removed}")
-        print("===============================================")
-
-        if cfg_file.TRACKING.GT:
-            # MOTChallenge format for Dataframe
-            df = pd.DataFrame(res)
-            df.columns   = ['frame', 'track_id', 'bbox_topleft_x', 'bbox_topleft_y', 'bbox_width', 'bbox_height']
-            df['conf']   = 1
-            df['Xworld'] = -1
-            df['Yworld'] = -1
-            df['Zworld'] = -1
-            df.to_csv(output_file, index=False, header=False)
+        logger.info("===============================================")
 
     if misc_cfg.RUN_UNIFICATION:
 
         # =============== UNIFY DIFFERENT IDs BOUNDING BOXES FROM SAME CAMERA ===============
-        # After the pipeline is done, we must refine the BBoxes to be the same if
-        # the similarity between features is above a certain threshold
-        # and the temporal constraint are respected (due to Tracking mismatch).
-        # In this case temporal constraint is given by the difference of start_time
-        # and end_time of a trajectory.
+        # After the pipeline is done, we must refine the BBoxes to be the same if:
+        # 
         logger.info("Running unification across SINGLE camera...")
 
         # max_similarity_per_vehicle is a list of tuples containing the vehicle ID, the most similar vehicle ID, and the similarity
         max_similarity_per_vehicle = get_max_similarity_per_vehicle(reid_DB, reid_cfg, camera_data, device,
-                                                                    similarity_algorithm, similarity_method)
+                                                                    similarity_algorithm, unification_method)
+
+        # If max_similarity_per_vehicle is empty, it means that no similar vehicles were detected across cameras
+        if not max_similarity_per_vehicle:
+            return
 
         # Check if any vehicle similarity exceeds the threshold
         if not any(similarity >= similarity_threshold for _, _, similarity in max_similarity_per_vehicle):
             logger.warning("No similar vehicles detected across cameras. Skipping unification.")
-            return
+        else:
+            logger.info("Similar vehicles detected across cameras. Starting unification...")
 
-        # Create a graph where nodes are vehicle IDs
-        G = GraphEngine()
+            # Step 1: Define Thresholds for Merging
+            TIME_GAP_THRESHOLD = 1.50           # Maximum allowed time gap in seconds
+            SPATIAL_DISTANCE_THRESHOLD = 40.0   # Maximum allowed spatial distance in pixels
 
-        # Print out vehicle pairs with the highest similarity per vehicle
-        for (veh1, veh2, similarity) in max_similarity_per_vehicle:
-            G.add_node(veh1)  # Add the vehicle (bbox_id) as a node
-            if similarity >= similarity_threshold:
-                print(f"\tVehicle {veh1} is most similar to Vehicle {veh2} with similarity {similarity:.2f}")
-                # In this case, we simply add an edge between the two vehicles, meaning that they are linked to each other.
-                G.add_edge(veh1, veh2, weight=similarity)
-            perf_timer.register_call("Unification")
+            # Function to compute spatial distance between bounding boxes
+            def compute_spatial_distance(box1, box2):
+                # Compute centers of the boxes (tlwh format)
+                x1_center = box1[0] + box1[2] / 2
+                y1_center = box1[1] + box1[3] / 2
+                x2_center = box2[0] + box2[2] / 2
+                y2_center = box2[1] + box2[3] / 2
 
-        # Find all connected components in the graph (useful if we have multiple vehicles to merge)
-        connected_components = G.get_connected_components()
+                # Compute Euclidean distance between the centers
+                distance = np.sqrt((x1_center - x2_center) ** 2 + (y1_center - y2_center) ** 2)
+                return distance
 
-        # Merge vehicles based on connected components
-        for component in connected_components:
-            component_list = list(component)
-            if len(component_list) > 1:
-                print(f"Trying to merge the following vehicles: {component_list}")
-                component_list = sorted(component_list, key=extract_numeric_id)
+            # Step 4: Merge Tracklets Based on Similarity and Spatial-Temporal Proximity
+            id_mapping = {}  # Mapping from old IDs to new IDs
 
-                # We need to further filter the component list by the timestamp.
-                # It means that we do need to enter each vehicle and check the timestamp of their trajectory
-                # If the timestamp is close enough, we can consider them as the same vehicle
-                # If the timestamp is too far apart, we can consider them as different vehicles
-                # We can use the start_time and end_time of the trajectory to determine this
+            for tuple in max_similarity_per_vehicle:
+                id_i, id_j, similarity = tuple[0], tuple[1], tuple[2]
 
-                traj_dict = {}
+                # Swap IDs if i > j (Meaning that we want the i to be the earlier car and j to be the later car)
+                if id_i > id_j:
+                    id_i, id_j = id_j, id_i
 
-                for v in component_list:
-                    # Trajectory ID:
-                    #   - vehicle_id
-                    #   - camera_id
-                    #   - start_time
-                    #   - end_time
-                    #   - trajectory_data
-                    trajectory = reid_DB.get_vehicle_single_trajectory(f'CAM{camera_data["_id"]}_V{v}')
+                # Skip if either tracklet has been merged into another
+                root_id_i = id_mapping.get(id_i, id_i)
+                root_id_j = id_mapping.get(id_j, id_j)
 
-                    if v not in traj_dict:
-                        traj_dict[v] = {}
+                if root_id_i == root_id_j:
+                    continue
 
-                    indices_traj = list(trajectory['trajectory_data'].keys())
+                if id_mapping.get(id_i) is not None or id_mapping.get(id_j) is not None:
+                    continue # Skip if the ID has already been merged
 
-                    traj_dict[v] = {
-                        'start_time': trajectory['start_time'],
-                        'end_time': trajectory['end_time'],
-                        'bbox_start_trajectory': trajectory['trajectory_data'][indices_traj[0]][3],  # XYXY format
-                        'bbox_end_trajectory': trajectory['trajectory_data'][indices_traj[-1]][3]    # XYXY format
-                    }
+                trajectory_i = reid_DB.get_vehicle_single_trajectory(f'CAM{camera_data["_id"]}_V{id_i}')
+                trajectory_j = reid_DB.get_vehicle_single_trajectory(f'CAM{camera_data["_id"]}_V{id_j}')
 
-                # Now add a value ['difference'] to the dictionary to store the difference between the start_time and end_time of i-1 and i indices
-                # If the difference is greater than 1.50 seconds, it means they should be treated as different vehicles.
-                # If the difference is less than 1.50 seconds, it means they should be treated as the same vehicle.
+                # Get the last detection of tracklet i and first detection of tracklet j
+                # 'trajectory_data':
+                #   - [0]: Features
+                #   - [1]: Compressed Image
+                #   - [2]: Shape
+                #   - [3]: Bounding Box
+                #   - [4]: Timestamp
+                end_det_i = trajectory_i['trajectory_data'][list(trajectory_i['trajectory_data'].keys())[-1]]
+                start_det_j = trajectory_j['trajectory_data'][list(trajectory_j['trajectory_data'].keys())[0]]
 
-                traj_dict_copy = traj_dict.copy()
-                for i, v in enumerate(traj_dict):
-                    if i == 0:
-                        continue
+                # Compute time gap
+                time_gap = start_det_j[4] - end_det_i[4]
+                if time_gap < 0 or time_gap > TIME_GAP_THRESHOLD:
+                    continue
 
-                    idx_vehicle_to_check = list(traj_dict.keys())[i - 1]
-                    difference = abs(traj_dict[v]['start_time'] - traj_dict[idx_vehicle_to_check]['end_time'])
-                    traj_dict[v]['difference'] = difference
+                # Compute spatial distance
+                spatial_distance = compute_spatial_distance(end_det_i[3], start_det_j[3])
+                if spatial_distance > SPATIAL_DISTANCE_THRESHOLD:
+                    continue
 
-                    # if difference is greater than 1.5 seconds, then remove the vehicle from the dictionary (it means that the vehicle is different)
-                    if difference > 1.50:
-                        traj_dict_copy.pop(v)
-                    else:
-                        # In this case, the difference is telling us that the vehicles could be the same
-                        # hence, we check for the distance between the two vehicles
-                        # If the distance is less than 1.5 meters, we consider them as the same vehicle
-                        # If the distance is greater than 1.5 meters, we consider them as different vehicles
+                # Merge tracklets
+                logger.debug(f"Merging Tracklet {root_id_j} in Tracklet {root_id_i}")
 
-                        # Calculate centers for bounding boxes
-                        def center_point(bbox):
-                            return ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
+                # Update id_mapping
+                id_mapping[root_id_j] = root_id_i
 
-                        center_bbox_start_i = center_point(traj_dict[v]['bbox_start_trajectory'])
-                        center_bbox_end_i = center_point(traj_dict[v]['bbox_end_trajectory'])
-                        center_bbox_start_j = center_point(traj_dict[idx_vehicle_to_check]['bbox_start_trajectory'])
-                        center_bbox_end_j = center_point(traj_dict[idx_vehicle_to_check]['bbox_end_trajectory'])
+                # Retrieve the DB IDs for the vehicles
+                DB_id_i = f'CAM{camera_data["_id"]}_V{root_id_i}'
+                DB_id_j = f'CAM{camera_data["_id"]}_V{root_id_j}'
 
-                        # Calculate the distance between the two vehicles
-                        distance_start = np.linalg.norm(np.array(center_bbox_start_i) - np.array(center_bbox_start_j))
-                        # distance_end = np.linalg.norm(np.array(center_bbox_end_i) - np.array(center_bbox_end_j))
+                # Update the bounding boxes and trajectories
+                reid_DB.update_bbox(DB_id_i, DB_id_j)
+                reid_DB.update_trajectory(DB_id_i, DB_id_j)
+                reid_DB.remove_vehicle(DB_id_j)
 
-                        # If the distance is greater than 40 pixels, it means they should be treated as different vehicles
-                        if distance_start > 40:
-                            traj_dict_copy.pop(v)
+                if tracking_cfg.SAVE_BOUNDING_BOXES:
+                    # Move the bounding box images from the other vehicle to the primary vehicle
+                    primary_vehicle_folder = os.path.join(os.path.join(tracking_cfg.BOUNDING_BOXES_OUTPUT_PATH, camera_data['name'], f"{DB_id_i.split('V')[-1]}"))
+                    other_vehicle_folder = os.path.join(os.path.join(tracking_cfg.BOUNDING_BOXES_OUTPUT_PATH, camera_data['name'], f"{DB_id_j.split('V')[-1]}"))
+                    
+                    # Get latest frame_number from the new vehicle_id and increment it by 1
+                    frame_number = int((sorted([frame for frame in os.listdir(primary_vehicle_folder) if frame.endswith('.jpg')])[-1]).split('_')[-1].split('.')[0]) + 1
 
-                # Update the database by:
-                # 1. Updating the bounding boxes
-                # 2. Updating the trajectories
-                # 3. Removing the vehicles from the database
-                final_component_list = list(traj_dict_copy.keys())
-                if len(final_component_list) > 1:
-                    print(f"Merging vehicles: {final_component_list}")
+                    # Move all the files from the other vehicle folder to the primary vehicle folder
+                    if os.path.exists(other_vehicle_folder):
+                        if os.path.exists(primary_vehicle_folder):
+                            for i, file in enumerate(os.listdir(other_vehicle_folder)):
+                                file_path = os.path.join(other_vehicle_folder, file)
+                                output_path = os.path.join(primary_vehicle_folder, f"frame_{frame_number + i}.jpg")
+                                shutil.move(file_path, output_path)
+                        else:
+                            shutil.move(other_vehicle_folder, primary_vehicle_folder)
+                        shutil.rmtree(other_vehicle_folder)
 
-                    # primary_vehicle = final_component_list[0]  # Choose the first vehicle as the primary one
-                    # for other_vehicle in final_component_list[1:]:
-                        # reid_DB.update_bbox(primary_vehicle, other_vehicle)
-                        # reid_DB.update_trajectory(primary_vehicle, other_vehicle)
-                        # reid_DB.remove_vehicle(other_vehicle)
-
-                        # if tracking_cfg.SAVE_BOUNDING_BOXES:
-                        #     # Move the bounding box images from the other vehicle to the primary vehicle
-                        #     other_vehicle_folder = os.path.join(os.path.join(tracking_cfg.BOUNDING_BOXES_OUTPUT_PATH, camera_data['name'], f"{other_vehicle.split('V')[-1]}"))
-                        #     primary_vehicle_folder = os.path.join(os.path.join(tracking_cfg.BOUNDING_BOXES_OUTPUT_PATH, camera_data['name'], f"{primary_vehicle.split('V')[-1]}"))
-                            
-                        #     # Get latest frame_number from the new vehicle_id and increment it by 1
-                        #     frame_number = int((sorted([frame for frame in os.listdir(primary_vehicle_folder) if frame.endswith('.jpg')])[-1]).split('_')[-1].split('.')[0]) + 1
-
-                        #     # Move all the files from the other vehicle folder to the primary vehicle folder
-                        #     if os.path.exists(other_vehicle_folder):
-                        #         if os.path.exists(primary_vehicle_folder):
-                        #             for i, file in enumerate(os.listdir(other_vehicle_folder)):
-                        #                 file_path = os.path.join(other_vehicle_folder, file)
-                        #                 output_path = os.path.join(primary_vehicle_folder, f"frame_{frame_number + i}.jpg")
-                        #                 shutil.move(file_path, output_path)
-                        #         else:
-                        #             shutil.move(other_vehicle_folder, primary_vehicle_folder)
-                        #         shutil.rmtree(other_vehicle_folder)
-            perf_timer.register_call("Unification")
-        print(f"Single camera unification complete for Camera with ID: {camera_data['_id']}.")
+                perf_timer.register_call("Unification")
+            logger.debug(f"Single camera unification complete for Camera with ID: {camera_data['_id']}.")
         # =================================================================================== #
-    logger.info(f"MOT Benchmark (times in ms):\n{perf_timer.get_benchmark()}")
+    
+    # Get the benchmark data
+    logger.info("MTSC Benchmark (times in ms):")
+    records = perf_timer.get_benchmark(unit="ms", precision=4, logger=logger)
 
-# === WIP! === #
-def run_mtmc(similarity_algorithm, similarity_method, similarity_method_query):
+    # Final insertion of the data in a .txt file
+    if cfg_file.TRACKING.GT:
+        logger.debug(f"Saving MTSC data for Camera {camera_data['_id']} to .txt file and pickle...")
+        pickle_tracklets = []
+        res = {
+            "frame": [],
+            "track_id": [],
+            "bbox_topleft_x": [],
+            "bbox_topleft_y": [],
+            "bbox_width": [],
+            "bbox_height": [],
+        }
+
+        # data['features'], data['compressed_image'], data['shape'],
+        # data['frame_number'], data['bounding_box'], data['timestamp'],
+        # data['confidence'], data['vehicle_id']
+        all_frames = reid_DB.get_camera_frames(camera_data['_id'])
+        for id in all_frames:
+            # Get all relevant information about this ID
+            frames = all_frames[id]
+
+            # Get vehicle ID
+            id = id.split('V')[-1]
+
+            # Get properties
+            features = [v[0] for _, v in frames.items()]
+            # compressed_images = [v[1] for _, v in frames.items()]
+            shapes = [v[2] for _, v in frames.items()]
+            frame_numbers = [v[3] for _, v in frames.items()]
+            bboxes = [v[4] for _, v in frames.items()]
+            timestamps = [v[5] for _, v in frames.items()]
+            confidences = [v[6] for _, v in frames.items()]
+            vehicle_ids = [v[7] for _, v in frames.items()]
+
+            # Write formatted output to the file
+            # ['FrameId', 'Id', 'X', 'Y', 'Width', 'Height', 'Conf', 'Xworld', 'Yworld', 'Zworld']
+            for bbox, frame_num in zip(bboxes, frame_numbers):
+                tx, ty, w, h = bbox
+                res['frame'].append(frame_num)
+                res['track_id'].append(id)
+                res['bbox_topleft_x'].append(int(tx))
+                res['bbox_topleft_y'].append(int(ty))
+                res['bbox_width'].append(int(round(w)))
+                res['bbox_height'].append(int(round(h)))
+
+            # Append to pickle
+            pickle_tracklets.append({
+                'id': id,
+                'features': features,
+                'shapes': shapes,
+                'frame_numbers': frame_numbers,
+                'bboxes': bboxes,
+                'timestamps': timestamps,
+                'confidences': confidences,
+                'vehicle_ids': vehicle_ids,
+            })
+
+        # MOTChallenge format for Dataframe
+        df = pd.DataFrame(res)
+        df.columns   = ['frame', 'track_id', 'bbox_topleft_x', 'bbox_topleft_y', 'bbox_width', 'bbox_height']
+        df['conf']   = 1
+        df['Xworld'] = -1
+        df['Yworld'] = -1
+        df['Zworld'] = -1
+        df.to_csv(output_file, index=False, header=False)
+
+        # Export the pickle file
+        pickle_path = os.path.join(pickle_global_path, f"tracklets_cam{camera_data['_id']}.pkl")
+        with open(pickle_path, 'wb') as f:
+            pickle.dump(pickle_tracklets, f)
+
+    return records
+
+def run_mtmc(similarity_method, db, cam_layout, cfg, logger):
     """Cross-camera analysis to link vehicles across multiple cameras."""
-    print("Running cross-camera analysis for MTMC...")
 
-    # Logger
-    logger = Logger()
+    # Camera Layout
+    cams = CameraLayout(cam_layout['path'])
+
+    # Set seed
+    set_seed(cfg_file.MISC.SEED)
+    logger.debug(f"Correctly set the seed to: {cfg_file.MISC.SEED}")
+
+    logger.info("Running cross-camera analysis for MTMC...")
 
     # DB connection
     USE_DB = db_cfg.USE_DB
-    reid_DB = Database(db_configs=db_cfg, logger=logger) if USE_DB else None
+    reid_DB = db if USE_DB else None
+
+    logger.info("Gathering all frames...")
+    log_start_time = time.time()
+
+    # Fallback to Pickle first
+    if cfg_file.MTMC.USE_PICKLE:
+        pickle_objs_files = os.listdir(cfg_file.MTMC.PICKLE_GLOBAL_PATH)
+
+        # Filter only for files which ends with .pkl and starts with "tracklets_cam"
+        pickle_objs_files = [file for file in pickle_objs_files if file.endswith('.pkl') and file.startswith('tracklets_cam')]
+
+        if len(pickle_objs_files) != cams.n_cams:
+            logger.error("Number of Pickle files does not match the number of cameras.")
+            raise Exception()
+
+        all_frames = {}
+        for i, pickle_path in enumerate(pickle_objs_files):   # PICKLE SINGLE FILES
+            path = os.path.join(cfg_file.MTMC.PICKLE_GLOBAL_PATH, pickle_path)
+            with open(path, "rb") as f:
+                res = pickle.load(f)
+                # We must have the same schema as get_all_frames() from the Database
+                for r in res:
+                    vehicle_id = r['vehicle_ids'][0]  # Assuming vehicle_id is consistent across the frames
+
+                    # Loop over frame numbers and other associated data
+                    for j in range(len(r['frame_numbers'])):
+                        frame_number = r['frame_numbers'][j]
+                        
+                        # Initialize the camera entry in all_frames if it doesn't exist
+                        if i not in all_frames:
+                            all_frames[i] = {}
+                        
+                        # Initialize the vehicle entry in the camera if it doesn't exist
+                        if vehicle_id not in all_frames[i]:
+                            all_frames[i][vehicle_id] = {}
+                        
+                        # Append the frame data to the vehicle entry for this camera
+                        all_frames[i][vehicle_id].update(
+                            {frame_number: {
+                            'frame_number': frame_number,
+                            'bounding_box': r['bboxes'][j],
+                            'features': r['features'][j],
+                            'compressed_image': None,
+                            'shape': r['shapes'][j],
+                            'timestamp': r['timestamps'][j],}
+                            })
+    elif reid_DB:
+        # Gather all frames from the Database, separated by vehicle ID
+        # For each vehicle ID, we will have a list of frames
+        # We will then run the ReID model on each frame and compare the features
+        # If the features are similar, we will consider them as the same vehicle
+        # If the features are different, we will consider them as different vehicles
+        all_frames = reid_DB.get_all_frames()
+    else:
+        logger.error("No valid input provided. Please provide either a list of Pickle paths or a valid Database connection.")
+        raise Exception()
+
+    logger.info(f"Frames gathered. Took {time.time() - log_start_time:.3f} s.")
 
     # =============== UNIFY DIFFERENT IDs BOUNDING BOXES FROM DIFFERENT CAMERAs =============== #
-    # Gather all frames from the Database, separated by vehicle ID
-    # For each vehicle ID, we will have a list of frames
-    # We will then run the ReID model on each frame and compare the features
-    # If the features are similar, we will consider them as the same vehicle
-    # If the features are different, we will consider them as different vehicles
-    all_frames = reid_DB.get_all_frames()
 
-    # We must extract a query image from each vehicle and compare it with the gallery images of trajectories of different cameras
-    # We will then compute the similarity between the query image and the gallery images
-    # If the similarity is high, we will consider them as the same vehicle
-    # If the similarity is low, we will consider them as different vehicles
-    # Take the total number of vehicles in all_frames
-    total_num_frames = 0
-    col_names, row_names = [], []                
-
-    # Iterate through each camera
-    for cam in all_frames:
-        # Iterate through each vehicle in the camera
-        for vehicle in all_frames[cam]:
-            # Query Image. We'll take the middle frame of the trajectory
-            total_num_frames += len(all_frames[cam][vehicle])
-            idx = int(len(all_frames[cam][vehicle]) / 2)
-
-            # Iterate through each frame of the vehicle
-            for i, frame_id in enumerate(all_frames[cam][vehicle]):
-                # Create column names for each frame
-                if i == idx:
-                    row_names.append(f"Q_{frame_id}")
-                else:
-                    col_names.append(f"G_{frame_id}")
-
-    # Create a matrix of similarities
-    sim_matrix = np.zeros((len(row_names), len(col_names)))
-
-    # Initialize a pandas DataFrame to store the matrix of similarities
-    df = pd.DataFrame(sim_matrix, index=row_names, columns=col_names)
-
-    # We need to fill the df now in this way:
-    # - Iterate over the DataFrame rows (which are the queries)
-    # - Take the feature of that query
-    # - Iterate over each row, making sure to skip the gallery images coming from the same car and the gallery images coming from the same camera. Everything else should be computed with a similarity measure.
-    with tqdm(total=len(row_names) * len(col_names), desc="Computing Similarity Matrix") as pbar:
-        for query_idx, query_name in enumerate(row_names):
-            # Extract camera and vehicle information from the query row name
-            query_cam, query_vehicle, query_frame = query_name.split('_')[1:4] # ['CAM0', 'V20', 'F17']
-            query_cam_id = int(query_cam.split("CAM")[-1])  # Camera number extraction | 'CAM0' -> 0
-            query_name = query_name.split('Q_')[-1]  # Extract the frame number | 'Q_CAM0_V20_F17' -> 'CAM0_V20_F17'
-            
-            # Retrieve the feature for the query based on the similarity method
-            if similarity_method_query == 'mean':
-                frames = all_frames[query_cam_id][f'{query_cam}_{query_vehicle}']
-                query_feature = np.mean([frame_data[0] for frame_data in frames.values()], axis=0)
-            elif similarity_method_query == 'individual':
-                query_feature = all_frames[query_cam_id][f'{query_cam}_{query_vehicle}'][f'{query_name}'][0]
-            else:
-                raise ValueError(f"Invalid similarity method: {similarity_method_query}")
-
-            # Loop through each gallery image in the DataFrame (columns)
-            for gallery_idx, gallery_name in enumerate(col_names):
-                # Extract camera and vehicle from the gallery column name
-                gallery_cam, gallery_vehicle, gallery_frame = gallery_name.split('_')[1:4]
-                
-                # Skip if the gallery image is from the same camera
-                if query_cam == gallery_cam:
-                    pbar.update(1)
-                    continue
-
-                gallery_cam_id = int(gallery_cam.split("CAM")[-1])  # Camera number extraction
-                gallery_name = gallery_name.split('G_')[-1]  # Extract the frame number | 'G_CAM0_V20_F17' -> 'CAM0_V20_F17'
-                gallery_feature = all_frames[gallery_cam_id][f'{gallery_cam}_{gallery_vehicle}'][f'{gallery_name}'][0]
-
-                # Compute the similarity between the query and gallery features
-                if similarity_algorithm == 'euclidean':
-                    similarity = np.linalg.norm(query_feature - gallery_feature)
-                elif similarity_algorithm == 'cosine':
-                    similarity = cosine_similarity_np(query_feature, gallery_feature)
-                else:
-                    raise ValueError(f"Invalid similarity algorithm: {similarity_algorithm}")
-
-                # Store the result in the DataFrame
-                df.iloc[query_idx, gallery_idx] = similarity
-                pbar.update(1)
-
-    # ======= !!! IMPORTANT !!! ======= #
-    # Before showing the predictions, we might need to filter again for the Top-K predictions based on the timestamp and direction
-    # This is because we might have very very similar cars (even duplicates sometimes - That's the case of a GTA V dataset)
-    # ================================= #
-
-    # Remove trajectories below the threshold
-    df_cleaned, traj_removed = remove_below_threshold(df, threshold=removing_threshold, method=similarity_method)
-
-    # Compare trajectories between cameras
-    # Threshold here is for the mean of the gallery features compared with the query feature
-    possible_traj, G = compare_trajectories(reid_DB, df_cleaned, threshold=comparing_threshold, method=similarity_method)
+    # all_frames must be constructed in this way:
+    # - List of Track objects, where in each Track object, we have the following:
+    #   - ID of the vehicle
+    #   - Mean Feature of the vehicle
+    #   - Global Start Time of the vehicle trajectory
+    #   - Global End Time of the vehicle trajectory
+    all_frames_tracks = []
     
-    connected_components = G.get_connected_components() # Find all connected components in the graph
+    # Iterate through each camera
+    logger.info("Constructing Track objects...")
+    for i, cam in enumerate(all_frames):
+        for vehicle in all_frames[cam]:
+            # Get the frames for the vehicle
+            frames = all_frames[cam][vehicle]
 
-    # Sort, for each key, the values by the similarity
-    for key in possible_traj:
-        possible_traj[key] = sorted(possible_traj[key], key=lambda x: x[list(x.keys())[0]][0], reverse=True)
-    # ================================= #
+            # Gather the key of the first and last frame
+            first_frame_index = list(frames.keys())[0]
+            last_frame_index = list(frames.keys())[-1]
 
-    # # Transform data into a structured format for DataFrame
-    # rows = []
-    # columns = []
-    # values = []
+            # Frame of the first and last timestamps
+            try: # DB format
+                first_frame_index = int(first_frame_index.split("F")[-1])
+                last_frame_index = int(last_frame_index.split("F")[-1])
+            except: # Pickle format
+                first_frame_index = int(first_frame_index)
+                last_frame_index = int(last_frame_index)
 
-    # # Extract data into lists for DataFrame creation
-    # for (query, _), galleries in possible_traj.items():
-    #     for gallery in galleries:
-    #         for gallery_id, (similarity, _) in gallery.items():
-    #             rows.append(query)
-    #             columns.append(gallery_id)
-    #             values.append(similarity)
+            # Insert Track object into the list
+            tracklet = Track(vehicle_id=vehicle)
+            tracklet.id = len(all_frames_tracks)
+            tracklet.cam = i
+            tracklet.add_frames(frames)
+            tracklet.extract_bboxes()
+            tracklet.extract_features()
 
-    # # Create a DataFrame with the similarity matrix
-    # similarity_df = pd.DataFrame({'Query': rows, 'Gallery': columns, 'Similarity': values})
-    # similarity_matrix = similarity_df.pivot(index="Query", columns="Gallery", values="Similarity")
-
-    # # Plot using seaborn heatmap
-    # import seaborn as sns
-    # plt.figure(figsize=(10, 8))
-    # sns.heatmap(similarity_matrix, cmap="YlGnBu", annot=True, fmt=".2f", cbar_kws={'label': 'Similarity Score'})
-    # plt.title("Trajectory Similarity Matrix")
-    # plt.xlabel("Gallery Trajectories")
-    # plt.ylabel("Query Trajectories")
-    # plt.show()
-
-    K = 3 # Top K predictions to show
-    vehicles_to_show = 8 # len(list(possible_traj.keys()))/ integer_number (e.g. 4)
-    possible_traj = dict(list(possible_traj.items())[-vehicles_to_show:])
-    # possible_traj = dict(list(possible_traj.items())[:vehicles_to_show])
-
-    fig, axes = plt.subplots(vehicles_to_show, K+1, figsize=(12, 15))
-    query_trans = T.Pad(4, 0)
-    good_trans = T.Pad(4, (0, 255, 0))          # Green
-    bad_trans = T.Pad(4, (255, 0, 0))           # Red
-    empty_trans = T.Pad(4, (255, 255, 0, 255))  # Yellow
-
-    # Create a transparent image with RGBA mode
-    width, height = 128, 128  # Specify your desired dimensions
-    transparent_img = Image.new("RGBA", (width, height), (0, 0, 0, 0))  # (0, 0, 0, 0) is fully transparent
-    transparent_img = empty_trans(transparent_img)
-
-    # Set column titles
-    axes[0, 0].set_title("Query")
-    for j in range(1, K+1):
-        axes[0, j].set_title(f"Prediction #{j}")
-
-    for i, ((query, _), galleries) in enumerate(possible_traj.items()):
-        if i == vehicles_to_show: break
-
-        # Safely remove all axis from the plot
-        for ax in axes[i]:
-            ax.axis("off")
-
-        q_cam = query.split('_')[1]                 # 'CAM0'
-        q_cam_id = int(q_cam.split('CAM')[-1])      # 0
-        q_vid = q_cam + '_' + query.split('_')[2]   # 'CAM0_V10'
-        query_img = load_middle_frame(tracking_cfg.BOUNDING_BOXES_OUTPUT_PATH, q_vid, q_cam_id)
-        query_img = query_trans(query_img)
-        ax = axes[i, 0]  # Display in the first column of the row
-        ax.imshow(query_img)
-
-        # Special case for when a query does not have any predictions
-        if len(galleries) == 0:
-            for j in range(0, K):
-                ax = axes[i, j+1]
-                ax.imshow(transparent_img)
-            continue
-                
-        # Plot the top K predictions
-        # for j in range(min(K, len(galleries))):
-        for j in range(0, K):
-            ax = axes[i, j+1]  # Display in subsequent columns
-            try:
-                gvid, (sim, _) = list(galleries[j].items())[0]
-            except:
-                ax.imshow(transparent_img)
-                continue
-            g_cam = gvid.split('_')[0]              # 'CAM1'
-            g_cam_id = int(g_cam.split('CAM')[-1])  # 1
-            img_pred = load_middle_frame(tracking_cfg.BOUNDING_BOXES_OUTPUT_PATH, gvid, g_cam_id)
-            if j == 0:
-                img_pred = good_trans(img_pred)
+            # Set the start and end times of the tracklet
+            if cams:
+                tracklet.set_start_time(first_frame_index / cams.fps[i] / cams.scales[i] + cams.offset[i])
+                tracklet.set_end_time(last_frame_index / cams.fps[i] / cams.scales[i] + cams.offset[i])
             else:
-                img_pred = bad_trans(img_pred)
+                logger.error("Camera Layout not provided. Cannot set start and end times.")
+                raise Exception()
 
-            ax.title.set_text(f"{sim:.2f}")
-            ax.imshow(img_pred)
+            all_frames_tracks.append(tracklet)
 
-    plt.tight_layout()
-    plt.show()
-    plt.pause(200000) # Pause for the Debug mode
+    n = len(all_frames_tracks)
 
-    # # ========================================================================================= #
+    # precompute compatibility between tracks
+    compat = np.zeros((n, n), dtype=bool)
+    for i in range(n):
+        for j in range(i, n):
+            is_comp = tracks_compatible(all_frames_tracks[i], all_frames_tracks[j], cams)
+            compat[i, j] = is_comp
+            compat[j, i] = is_comp
+
+    SIMILARITY_THRESHOLD = cfg.REID.TEST.SIMILARITY_THRESHOLD
+    linkage = cfg.REID.TEST.LINKAGE_METHOD # 'mean_feature' / 'average' / 'single' / 'complete'
+    last_mod = [0] * n # timestamp of when the last time an mtrack was modified
+    timestamp = 1
+
+    # Compute the similarity matrix between the mean features
+    log_start_time = time.time()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    f = torch.Tensor(np.stack([track.mean_feature(method=similarity_method) for track in all_frames_tracks])).to(device)
+
+    # Compute similarity matrix
+    sim_matrix = torch.matmul(f, f.T).cpu().numpy()
+
+    logger.info(f"Similarity Matrix computed. Took {time.time() - log_start_time:.3f} s.")
+
+    # Create a DataFrame to store the similarity matrix
+    df = pd.DataFrame(sim_matrix,
+                      index=[track.id for track in all_frames_tracks],
+                      columns=[track.id for track in all_frames_tracks])
+
+    # MulticamTracks
+    mtracks = [Trajectory(i, [all_frames_tracks[i]], len(all_frames)) for i in range(n)]
+
+    # Simply, now we do the following:
+    #   - For each row and column by column:
+    #    - Check if the two tracks can be compatible (in terms of camera)
+    #    - If they are compatible, we check if the similarity is above the MAX_SIMILARITY_THRESHOLD
+    #    - If it is, we consider them as the same vehicle
+    import heapq
+
+    # Priority queue for merge candidates
+    merge_queue = []
+
+    # Keep track of merged trajectories
+    remaining_tracks = set(range(len(df)))
+
+    logger.info("Starting the merging process...")
+    log_start_time = time.time()
+    for i in range(len(df)):
+        for j in range(i + 1, len(df)):  # Avoid duplicates and self-pairs
+            # First of all we control the cameras, if they are compatible
+            if tracks_compatible(all_frames_tracks[i], all_frames_tracks[j], cams) and df.iloc[i, j] >= SIMILARITY_THRESHOLD:  # Check similarity threshold
+                merge_queue.append((-df.iloc[i, j], timestamp, i, j))  # Use -similarity for max-heap
+
+    heapq.heapify(merge_queue)
+
+    while merge_queue:
+        minus_sim, t, i, j = heapq.heappop(merge_queue)
+
+        # Skip if trajectories are no longer valid (e.g., already merged)
+        if i not in remaining_tracks or j not in remaining_tracks:
+            continue
+        
+        # This means that we do break the loop if we arrived in a point where the similarity is below the given threshold
+        if minus_sim > -SIMILARITY_THRESHOLD:
+            break
+
+        # if since the queue entry any tracks was modified, it is an invalid entry
+        if t < max(last_mod[i], last_mod[j]):
+            continue
+
+        # Merge logic: Combine metadata, update mean features, etc.
+        mtracks[i].merge_with(mtracks[j])
+        timestamp += 1 # Update timestamp
+        last_mod[i] = timestamp
+        last_mod[j] = timestamp
+
+        # Remove the merged trajectory
+        remaining_tracks.remove(j)
+
+        # Update similarity matrix for the merged trajectory
+        for k in remaining_tracks:
+            if k != i:
+                track1 = mtracks[i]
+                track2 = mtracks[k]
+
+                # Check camera compatibility
+                if have_mutual_cams(track1, track2) or not any_compatible(track1, track2, cams):
+                    continue
+                
+                # Compute new similarity               
+                new_similarity = compute_similarity(track1, track2, linkage, True, df)
+                if new_similarity >= SIMILARITY_THRESHOLD:
+                    heapq.heappush(merge_queue, (-new_similarity, timestamp, i, k))
+
+    final_trajectories = [mtracks[i] for i in remaining_tracks]
+
+    for idx, mtrack in enumerate(final_trajectories):
+        mtrack.id = idx
+        for track in mtrack.tracks:
+            track.id = idx
+
+    logger.info("Merging process completed. Took {:.3f} s.".format(time.time() - log_start_time))
+
+    # Insert the single camera tracks into a list divided by camera
+    camera_tracks = [[] for _ in range(cams.n_cams)]
+    for mtrack in final_trajectories:
+        for track in mtrack.tracks:
+            camera_tracks[track.get_cam_id()].append(track)
+
+    # Run MOTA metrics
+    pickle_global_path = cfg_file.MTMC.PICKLE_GLOBAL_PATH
+    for i, cam_track_list in tqdm(enumerate(camera_tracks), desc="Saving final MTMC predictions", unit="Camera", total=len(camera_tracks)):
+        date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        output_file = f'MTMC-predictions_camera-{i}_{date}.txt'
+
+        pickle_tracklets = []
+        res = {
+            "frame": [],
+            "track_id": [],
+            "bbox_topleft_x": [],
+            "bbox_topleft_y": [],
+            "bbox_width": [],
+            "bbox_height": [],
+        }
+
+        # Retrieve the tracks for the camera
+        for track in cam_track_list:
+            # frames:
+            #  - [0] => frame_number
+            #  - [1] => bounding box
+            #  - [2] => features
+            #  - [3] => compressed_image
+            #  - [4] => shape
+            #  - [5] => timestamp
+            frames = track.frames
+
+            try:
+                frame_numbers = [frame[0] for k, frame in frames.items()]
+                bboxes = [frame[1] for k, frame in frames.items()]
+                features = [frame[2] for k, frame in frames.items()]
+            except:
+                frame_numbers = [frame['frame_number'] for k, frame in frames.items()]
+                bboxes = [frame['bounding_box'] for k, frame in frames.items()]
+                features = [frame['features'] for k, frame in frames.items()]
+
+            # Write formatted output to the file
+            # ['FrameId', 'Id', 'X', 'Y', 'Width', 'Height', 'Conf', 'Xworld', 'Yworld', 'Zworld']
+            for bbox, frame_num in zip(bboxes, frame_numbers):
+                tx, ty, w, h = bbox
+                res['frame'].append(frame_num)
+                res['track_id'].append(track.id)
+                res['bbox_topleft_x'].append(int(tx))
+                res['bbox_topleft_y'].append(int(ty))
+                res['bbox_width'].append(int(round(w)))
+                res['bbox_height'].append(int(round(h)))
+
+            # Append to pickle
+            pickle_tracklets.append({
+                'id': id,
+                'features': features,
+                # 'shapes': shapes,
+                'frame_numbers': frame_numbers,
+                'bboxes': bboxes,
+                # 'timestamps': timestamps,
+                'vehicle_id': track.vehicle_id,
+            })
+
+        # MOTChallenge format for Dataframe
+        df = pd.DataFrame(res)
+        df.columns   = ['frame', 'track_id', 'bbox_topleft_x', 'bbox_topleft_y', 'bbox_width', 'bbox_height']
+        df['conf']   = 1
+        df['Xworld'] = -1
+        df['Yworld'] = -1
+        df['Zworld'] = -1
+        df.to_csv(output_file, index=False, header=False)
+
+        # Export the pickle file
+        pickle_path = os.path.join(pickle_global_path, f"multitracklet_cam{i}.pkl")
+        with open(pickle_path, 'wb') as f:
+            pickle.dump(pickle_tracklets, f)
+
+    if cfg_file.MTMC.SHOW_MTMC_IMAGES == True:
+        # We do need to show some results starting from the camera_tracks
+        num_vehicles_to_show = 5
+        min_bbox_area = 100
+        col_names, row_names = [], []
+        col_imgs, row_imgs = {}, {}
+
+        # get a random seed each time (for the random sampling here)
+        random.seed(datetime.now())
+
+        # take a random sample of vehicles based on num_vehicles_to_show
+        random_vehicles = random.sample(final_trajectories, num_vehicles_to_show)
+
+        # Iterate through each camera
+        for i, traj in enumerate(random_vehicles):
+            # Retrieve the list of tracks for this trajectory
+            cam_tracks = traj.tracks
+
+            first_track = cam_tracks[0]
+
+            found = False
+            # For the first track, we take the index of the frame which has a shape of at least 80 in either width or height
+            for k, v in first_track.frames.items():
+                try:
+                    shape = v[4]
+                except:
+                    shape = v['shape']
+                if shape[0] >= min_bbox_area or shape[1] >= min_bbox_area:
+                    idx = k
+                    found = True
+                    break
+
+            if not found:
+                idx = int(len(first_track.frames) / 2)
+                idx = list(first_track.frames.keys())[idx]
+
+            # Retrieve the middle frame index of the first track, the rest will be placed as columns
+            q_frame = first_track.frames[idx]
+
+            # q_frame[3] => compressed_image
+            # q_frame[4] => shape
+            try: # DB format
+                comp_img = q_frame['compressed_image']
+                shape = q_frame['shape']
+            except: # Pickle format
+                comp_img = q_frame[3]
+                shape = q_frame[4]
+            q_image = decompress_img(comp_img, shape, dtype=np.uint8)
+            # reshape this numpy array to a PIL Image
+            q_image = Image.fromarray(q_image).convert("RGB")
+            q_image = ImageOps.contain(q_image, (128, 128))
+
+            q_name = f"Q_{cam_tracks[0].vehicle_id}"
+            row_names.append(q_name)
+
+            if q_name not in row_imgs:
+                row_imgs[q_name] = []
+            row_imgs[q_name].append(q_image)
+
+            # Simply loop through the rest of the tracks (avoiding the first one), take the middle frame and append it to the columns
+            for j, track in enumerate(cam_tracks[1:]):
+
+                found = False
+                # For the first track, we take the index of the frame which has a shape of at least 80 in either width or height
+                for k, v in track.frames.items():
+                    try:
+                        shape = v[4]
+                    except:
+                        shape = v['shape']
+                    if shape[0] >= min_bbox_area or shape[1] >= min_bbox_area:
+                        idx = k
+                        found = True
+                        break
+                
+                if not found:
+                    idx = int(len(track.frames) / 2)
+                    idx = list(track.frames.keys())[idx]
+
+                g_frame = track.frames[idx]
+
+                # q_frame[3] => compressed_image
+                # q_frame[4] => shape
+                try: # DB format
+                    comp_img = g_frame['compressed_image']
+                    shape = g_frame['shape']
+                except: # Pickle format
+                    comp_img = g_frame[3]
+                    shape = g_frame[4]
+                g_image = decompress_img(comp_img, shape, dtype=np.uint8)
+                g_image = Image.fromarray(g_image).convert("RGB")
+                g_image = ImageOps.contain(g_image, (128, 128))
+
+                g_name = f"G_{track.vehicle_id}"
+                col_names.append(g_name)
+
+                if q_name not in col_imgs:
+                    col_imgs[q_name] = []
+                col_imgs[q_name].append(g_image)
+
+        # take the maximum number of gallery images from the col_imgs dictionary
+        K = max([len(imgs) for imgs in col_imgs.values()])
+
+        fig, axes = plt.subplots(num_vehicles_to_show, K+1, figsize=(12, 15))
+        query_trans = T.Pad(4, 0)
+        good_trans = T.Pad(4, (0, 255, 0))          # Green
+        bad_trans = T.Pad(4, (255, 0, 0))           # Red
+        empty_trans = T.Pad(4, (255, 255, 0, 255))  # Yellow
+
+        # Create a transparent image with RGBA mode
+        width, height = 128, 128  # Specify your desired dimensions
+        transparent_img = Image.new("RGBA", (width, height), (0, 0, 0, 0))  # (0, 0, 0, 0) is fully transparent
+        transparent_img = empty_trans(transparent_img)
+
+        # Set column titles
+        axes[0, 0].set_title("Query")
+        for j in range(1, K+1):
+            axes[0, j].set_title(f"Prediction #{j}")
+
+        # Iterate over the col_imgs and row_imgs dictionaries
+        for i, (name, imgs) in enumerate(row_imgs.items()):
+            query_name = name
+            query_img = query_trans(imgs[0])
+
+            # Safely remove all axis from the plot
+            for ax in axes[i]:
+                ax.axis("off")
+
+            # Display the query image
+            ax = axes[i, 0]
+            ax.imshow(query_img)
+                
+            # Get the tracks related to the query image
+            related_tracks = col_imgs.get(query_name, None)
+            if related_tracks is not None:
+                for j, img in enumerate(related_tracks):
+                    ax = axes[i, j+1]
+                    img = good_trans(img)
+                    ax.imshow(img)
+            else:
+                for j in range(0, K):
+                    ax = axes[i, j+1]
+                    ax.imshow(transparent_img)
+
+        plt.tight_layout()
+        plt.show()
+        plt.pause(0)
+
+    logger.info("MTMC successfully completed.")
+
+    # =============== TARGET VEHICLE SEARCH =============== #
+    if cfg_file.MISC.RUN_TARGET_SEARCH == True:
+        logger.info("Starting Target Vehicle search...")
+        from target.target import target_search
+
+        # Target image and camera ID
+        target_path, target_cam = cfg_file.MISC.TARGET_PATH
+        target = {"path": target_path, "camera": target_cam}
+        target_search(target, final_trajectories, all_frames_tracks, cams, cfg)
+    # ======================================================

@@ -44,7 +44,7 @@ class Transformations:
         self.jitter_saturation = configs.JITTER_SATURATION if configs is not None else 0.0
         self.jitter_hue = configs.JITTER_HUE if configs is not None else 0.0
         self.color_augmentation = configs.COLOR_AUGMENTATION if configs is not None else False
-        self.padding = configs.PADDING if configs is not None else 0.0
+        self.padding = configs.PADDING if configs is not None else 0
         self.mean = configs.NORMALIZE_MEAN if configs is not None else None  # ImageNet mean
         self.std = configs.NORMALIZE_STD if configs is not None else None  # ImageNet std
 
@@ -52,11 +52,11 @@ class Transformations:
         self.transform_train = []
         
         # Resize to specified size
-        if (self.resize != 0 or self.resize != (0, 0)):
+        if self.resize not in [0, (0, 0)]:
             self.transform_train += [transforms.Resize(self.resize)]
             
         # Random crop to specified size
-        if (self.random_crop != 0 or self.resize != (0, 0) or self.random_crop != None):
+        if self.random_crop not in [0, (0, 0), None]:
             self.transform_train += [transforms.RandomCrop(self.random_crop)]
         
         # Random horizontal flip
@@ -69,7 +69,7 @@ class Transformations:
                                                             contrast=self.jitter_contrast,
                                                             saturation=self.jitter_saturation,
                                                             hue=self.jitter_hue)]
-            
+
         # Convert to tensor
         self.transform_train += [transforms.ToTensor()]
         
@@ -78,7 +78,7 @@ class Transformations:
             self.transform_train += [ColorAugmentation()]
     
         # Pad the image with the specified padding
-        if (self.padding != 0.0) or (self.padding != (0, 0)):
+        if self.padding not in [0, (0, 0)]:
             self.transform_train += [transforms.Pad(self.padding)]
             
         # Normalize the image with the specified mean and std
@@ -95,7 +95,7 @@ class Transformations:
         self.transform_val = []
 
         # Resize to specified size
-        if (self.resize != 0 or self.resize != (0, 0)):
+        if self.resize not in [0, (0, 0)]:
             self.transform_val += [transforms.Resize(self.resize)] 
             
         # Convert to tensor

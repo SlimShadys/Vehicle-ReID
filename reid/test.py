@@ -1,23 +1,49 @@
 import argparse
 import os
 import sys
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import os
 import random
 import sys
-from config import _C as cfg_file
 
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+
+from config import _C as cfg_file
+from misc.utils import euclidean_dist, read_image
 from reid.dataset import DatasetBuilder
 from reid.datasets.transforms import Transformations
-from misc.utils import euclidean_dist, read_image
 from reid.model import ModelBuilder
-from torch.utils.data import DataLoader
 from reid.training.trainer import Trainer
+
+def pad_tensor_centered(tensor, target_shape):
+    """
+    Pad a single tensor to match the target shape while maintaining aspect ratio.
+    Padding is added evenly on all sides.
+    """
+    _, h, w = tensor.shape
+    target_h, target_w = target_shape
+    
+    # Calculate total padding needed
+    pad_h = max(target_h - h, 0)
+    pad_w = max(target_w - w, 0)
+    
+    # Calculate padding for each side
+    pad_left = pad_w // 2
+    pad_right = pad_w - pad_left
+    pad_top = pad_h // 2
+    pad_bottom = pad_h - pad_top
+    
+    # Pad the tensor (pad_left, pad_right, pad_top, pad_bottom)
+    padding = (pad_left, pad_right, pad_top, pad_bottom)
+    
+    return F.pad(tensor, padding, mode='constant', value=0)
 
 def set_seed(seed):
     random.seed(seed)
@@ -78,11 +104,38 @@ def compute_multiple_images_similarity(model, device, similarity_method, normali
             img_tensor = val_transform(img)
             images.append(img_tensor)
 
-    images = torch.stack(images).to(device)
+    # Get shapes of all images
+    shapes = [(img.shape[1], img.shape[2]) for img in images]
     
-    with torch.no_grad():
-        embeddings = model(images).squeeze().to(device)
+    # Check if all shapes are the same
+    if len(set(shapes)) != 1:
+        # Images have different shapes, need padding
+        max_h = max(shape[0] for shape in shapes)
+        max_w = max(shape[1] for shape in shapes)
         
+        padded_imgs = [pad_tensor_centered(img, (max_h, max_w)) for img in images]
+        images = padded_imgs
+
+    images = torch.stack(images).to(device)
+
+    with torch.no_grad():
+        embeddings = model(images)
+
+        if normalize_embeddings:
+            embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+
+    # outputs = []
+    # with torch.no_grad():
+    #     for img in images:
+    #         img = img.unsqueeze(0).to(device)
+    #         embeddings = model(img)
+
+    #         if normalize_embeddings:
+    #             embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+    #         outputs.append(embeddings)
+
+    #     embeddings = torch.cat(outputs)
+
     n = len(embeddings)
     similarity_matrix = torch.zeros((n, n))
     
@@ -171,13 +224,14 @@ def main(config, seed):
     run_reid_metrics = test_configs.RUN_REID_METRICS
     run_color_metrics = test_configs.RUN_COLOR_METRICS
     stack_images = test_configs.STACK_IMAGES
-    similarity = test_configs.SIMILARITY
+    similarity = test_configs.SIMILARITY_ALGORITHM
     normalize_embeddings = test_configs.NORMALIZE_EMBEDDINGS
     model_val_path = test_configs.MODEL_VAL_PATH
     img_path_1 = test_configs.PATH_IMG_1
     img_path_2 = test_configs.PATH_IMG_2
     # =====================================
 
+    dataset_name = 'veri_776'
     # Number of classes in each dataset (Only for ID classification tasks, hence only training set is considered)
     num_classes = {
         'ai_city': 440,
@@ -189,34 +243,31 @@ def main(config, seed):
         'vru': 7086,
     }
     
-    model = None
+    print("--------------------")
+    print(f"Building {model_name} model...")
+    model_builder = ModelBuilder(
+        model_name=model_name,
+        pretrained=pretrained,
+        num_classes=num_classes[dataset_name],
+        model_configs=model_configs,
+        device=device
+    )
 
-    if run_reid_metrics == True:
-        print("--------------------")
-        print(f"Building {model_name} model...")
-        model_builder = ModelBuilder(
-            model_name=model_name,
-            pretrained=pretrained,
-            num_classes=num_classes[dataset_name],
-            model_configs=model_configs,
-            device=device
-        )
+    # Get the model and move it to the device
+    model = model_builder.move_to(device)
 
-        # Get the model and move it to the device
-        model = model_builder.move_to(device)
+    # Load parameters from a .pth file
+    if (model_val_path is not None):
+        print("Loading model parameters from file...")
+        if ('ibn' in model_name):
+            model.load_param(model_val_path)
+        else:
+            checkpoint = torch.load(model_val_path, map_location=device)
+            model.load_state_dict(checkpoint['model'])
+        print(f"Successfully loaded model parameters from file: {model_val_path}")
 
-        # Load parameters from a .pth file
-        if (model_val_path is not None):
-            print("Loading model parameters from file...")
-            if ('ibn' in model_name):
-                model.load_param(model_val_path)
-            else:
-                checkpoint = torch.load(model_val_path, map_location=device)
-                model.load_state_dict(checkpoint['model'])
-            print(f"Successfully loaded model parameters from file: {model_val_path}")
-
-        model.eval()
-        print(model)
+    model.eval()
+    print(model)
 
     if run_reid_metrics == False and run_color_metrics == False:
         # Define the validation transformations
@@ -269,31 +320,6 @@ def main(config, seed):
             )
             color_model = model_builder.move_to(device)
             print(f"Successfully loaded color model from {color_configs.NAME}!")
-
-            if ('svm' in color_configs.NAME):
-                print(f"Building {model_name} model for SVM Color Recognition...")
-                model_builder = ModelBuilder(
-                    model_name=model_name,
-                    pretrained=pretrained,
-                    num_classes=num_classes[dataset_name],
-                    model_configs=model_configs,
-                    device=device
-                )
-
-                # Get the model and move it to the device
-                model = model_builder.move_to(device)
-
-                # Load parameters from a .pth file
-                if (model_val_path is not None):
-                    print("Loading model parameters from file...")
-                    if ('ibn' in model_name):
-                        model.load_param(model_val_path)
-                    else:
-                        checkpoint = torch.load(model_val_path, map_location=device)
-                        model.load_state_dict(checkpoint['model'])
-                    print(f"Successfully loaded model parameters from file: {model_val_path}")
-
-                model.eval()    
         else:
             color_model = None
 

@@ -9,12 +9,19 @@ from misc.utils import (init_pretrained_weights, weights_init_classifier,
 from reid.models.layers import GeM
 
 class ResNet(torch.nn.Module):
-    def __init__(self, model_name: str, num_classes, use_gem=False, use_stride=False, use_bottleneck=False, pretrained=(False, None)):
+    def __init__(self, model_name: str,
+                 num_classes,
+                 use_gem=False,
+                 use_stride=False,
+                 use_bottleneck=False,
+                 padding_mode = 'centered',
+                 pretrained=(False, None)):
         super(ResNet, self).__init__()
         
         # Variables
         self.model_name = model_name
         self.pretrained, self.url = pretrained
+        self.padding_mode = padding_mode
         
         # Get the base model
         if self.model_name == 'resnet18':
@@ -67,8 +74,11 @@ class ResNet(torch.nn.Module):
             self.pool = nn.AdaptiveAvgPool2d(1)
 
         if self.use_bottleneck:
-            # Bottleneck layer
-            self.bottleneck = nn.BatchNorm1d(self.fc_input_shape) # 2048 for ResNet-50
+            # Bottleneck layer based on the padding mode
+            if self.padding_mode == 'centered':
+                self.bottleneck = nn.BatchNorm1d(self.fc_input_shape)
+            else: # 'aspect_ratio'
+                self.bottleneck = nn.GroupNorm(num_groups=1, num_channels=self.fc_input_shape)
             self.bottleneck.bias.requires_grad_(False)
             self.bottleneck.apply(weights_init_kaiming)
 
@@ -95,8 +105,7 @@ class ResNet(torch.nn.Module):
             return features
 
 class ResNet_IBN(nn.Module):
-    def __init__(self,
-                 block: nn.Module,
+    def __init__(self, block: nn.Module,
                  layers: list,
                  num_classes: int,
                  fc_dims: Optional[Union[List[int], Tuple[int, ...]]],
@@ -104,6 +113,7 @@ class ResNet_IBN(nn.Module):
                  use_gem: str = False,
                  use_stride: str = False,
                  use_bottleneck: str = False,
+                 padding_mode = 'centered',
                  pretrained: Tuple[bool, str] = (False, None)):
         super(ResNet_IBN, self).__init__()
         
@@ -114,6 +124,8 @@ class ResNet_IBN(nn.Module):
         self.use_stride = use_stride
         self.use_bottleneck = use_bottleneck
         self.pretrained, self.url = pretrained
+
+        self.padding_mode = padding_mode
 
         self.conv1 = nn.Conv2d(3, self.scale, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(self.scale)
@@ -133,8 +145,11 @@ class ResNet_IBN(nn.Module):
         self.fc = self._construct_fc_layer(fc_dims, self.scale * 8 * block.expansion, dropout_p)
 
         if self.use_bottleneck:
-            # Bottleneck layer
-            self.bottleneck = nn.BatchNorm1d(self.feature_dim)
+            # Bottleneck layer based on the padding mode
+            if self.padding_mode == 'centered':
+                self.bottleneck = nn.BatchNorm1d(self.feature_dim)
+            else: # 'aspect_ratio'
+                self.bottleneck = nn.GroupNorm(num_groups=1, num_channels=self.feature_dim)
             self.bottleneck.bias.requires_grad_(False)
             self.bottleneck.apply(weights_init_kaiming)
 

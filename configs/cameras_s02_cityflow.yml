@@ -1,0 +1,23 @@
+MTMC:
+  camera_0:
+    path: './data/AICity22_Track1_MTMC_Tracking/validation/S02/c006/vdo.avi'
+    roi: './data/AICity22_Track1_MTMC_Tracking/validation/S02/c006/roi.jpg'
+    info: './data/AICity22_Track1_MTMC_Tracking/validation/S02/c006/c006_info.json'
+    gt: './data/AICity22_Track1_MTMC_Tracking/validation/S02/c006/gt/gt.txt'
+  camera_1:
+    path: './data/AICity22_Track1_MTMC_Tracking/validation/S02/c007/vdo.avi'
+    roi: './data/AICity22_Track1_MTMC_Tracking/validation/S02/c007/roi.jpg'
+    info: './data/AICity22_Track1_MTMC_Tracking/validation/S02/c007/c007_info.json'
+    gt: './data/AICity22_Track1_MTMC_Tracking/validation/S02/c007/gt/gt.txt'
+  camera_2:
+    path: './data/AICity22_Track1_MTMC_Tracking/validation/S02/c008/vdo.avi'
+    roi: './data/AICity22_Track1_MTMC_Tracking/validation/S02/c008/roi.jpg'
+    info: './data/AICity22_Track1_MTMC_Tracking/validation/S02/c008/c008_info.json'
+    gt: './data/AICity22_Track1_MTMC_Tracking/validation/S02/c008/gt/gt.txt'
+  camera_3:
+    path: './data/AICity22_Track1_MTMC_Tracking/validation/S02/c009/vdo.avi'
+    roi: './data/AICity22_Track1_MTMC_Tracking/validation/S02/c009/roi.jpg'
+    info: './data/AICity22_Track1_MTMC_Tracking/validation/S02/c009/c009_info.json'
+    gt: './data/AICity22_Track1_MTMC_Tracking/validation/S02/c009/gt/gt.txt'
+layout:
+  path: './data/AICity22_Track1_MTMC_Tracking/validation/S02/s02_camera_layout.txt'

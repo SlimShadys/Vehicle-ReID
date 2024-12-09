@@ -1,3 +1,4 @@
+import logging
 import time
 import numpy as np
 
@@ -38,7 +39,7 @@ class PerformanceTimer:
         self.calls = {}
         self.accumulated_calls = {}
 
-    def get_benchmark(self, unit="ms", precision=4):
+    def get_benchmark(self, unit="ms", precision=4, logger: logging.Logger = None):
         multip = 1000 if unit == "ms" else 1
         mxwidth = [0] * 4
         records = [["name", "min", "mean", "max"]]
@@ -59,4 +60,9 @@ class PerformanceTimer:
                                                                  for x, w in zip(record[1:], mxwidth[1:])])
             lines.append(line)
         sepline = "-" * (sum(mxwidth) + 4)
-        return "\n".join([lines[0], sepline] + lines[1:] + [sepline])
+
+        # use logger to print out the results
+        if logger is not None:
+            logger.info("\n".join([lines[0], sepline] + lines[1:] + [sepline]))
+
+        return records

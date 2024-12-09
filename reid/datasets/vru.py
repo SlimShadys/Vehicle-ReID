@@ -188,4 +188,4 @@ class VRU(object):
         # Combine all car IDs from train, query, and gallery sets
         all_car_ids = {car_id for _, _, car_id, _, _, _, _, _ in self.train}
         # Get the unique car IDs
-        return len(all_car_ids) + 1 # Add 1 to account for the 0-indexing
+        return len(all_car_ids) # Add 1 to account for the 0-indexing

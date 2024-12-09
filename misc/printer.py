@@ -1,4 +1,5 @@
 import logging
+import datetime
 
 class Logger():
     def __init__(self, level=None):
@@ -33,6 +34,11 @@ class Logger():
 
             # Attach the handler to the logger
             self.logger.addHandler(console_handler)
+
+            # Create a FileHandler (for file output) with the actual date
+            handler = logging.FileHandler(f'log-{datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.txt')
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
 
     def inc_depth(self):
         self.depth += 1

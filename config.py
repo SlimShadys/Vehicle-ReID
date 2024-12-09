@@ -1,11 +1,19 @@
 # NOTE n.1 : If SAMPLER_TYPE "random" or "balanced" is selected, BATCH_SIZE must be divisible by NUM_INSTANCES.
 # NOTE n.2 : If SAMPLER_TYPE "random" or "balanced" is selected, LOSS_TYPE must be "TripletLoss".
 # NOTE n.3 : If USE_RPTM is True, LOSS_TYPE must be "TripletLossRPTM".
+# NOTE n.4 : If PADDING_MODE is:
+#               - "aspect_ratio" : Make sure to NOT set the RandomCrop() transformation, as we do process
+#                                  the images one by one due to size issues with BatchNorm2d layer.
+#               - "centered"     : We process the images in batches directly as they do have the same size
+#                                  thanks to the padding process.
+#            In general, if Resize is an integer, the aspect ratio is kept either way.
 #
-# USEFUL INFO:
-# VRIC in total has 60.430 images
-# AICity in total has 85.058 images
-# AICity Sim in total has 192.150 images
+#  -======================================-
+# | USEFUL INFO:                           |
+# | VRIC in total has 60.430 images        |
+# | AICity in total has 85.058 images      |
+# | AICity Sim in total has 192.150 images |
+#  -======================================-
 
 from yacs.config import CfgNode as ConfigNode
 
@@ -31,6 +39,7 @@ _C.TRACKER              = ConfigNode()
 _C.TRACKER.MODEL        = ConfigNode()
 _C.TRACKING             = ConfigNode()
 _C.YOLO                 = ConfigNode()
+_C.METRICS              = ConfigNode()
 
 # ============================================================================================= #
 #                                      MISC CONFIGURATIONS                                      #
@@ -39,7 +48,7 @@ _C.MISC.SEED = 2047315
 _C.MISC.DEVICE = 'cuda' # 'cpu' / 'cuda'
 _C.MISC.GPU_ID = 0
 _C.MISC.USE_AMP = False
-_C.MISC.OUTPUT_DIR = './reid/results/Test-23'
+_C.MISC.OUTPUT_DIR = './reid/results/Test-29'
 
 # ============================================================================================= #
 #                                      ReID CONFIGURATIONS                                      #
@@ -47,7 +56,7 @@ _C.MISC.OUTPUT_DIR = './reid/results/Test-23'
 
 # ========> DATASET CONFIGS <========
 _C.REID.DATASET.DATA_PATH       = "./data"
-_C.REID.DATASET.DATASET_NAME    = ["vric", "ai_city", "ai_city_sim"] # ai_city / ai_city_mix / ai_city_sim / vehicle_id / veri_776 / veri_wild / vric / vru
+_C.REID.DATASET.DATASET_NAME    = 'veri_776' # ai_city / ai_city_mix / ai_city_sim / vehicle_id / veri_776 / veri_wild / vric / vru
 _C.REID.DATASET.SPLITTINGS      = [('vric', 0.2481), ('ai_city', 0.3528), ('ai_city_sim', 0.026)] # Only to be adjusted if dataset_name is a list (CombinedDataset)
 _C.REID.DATASET.DATASET_SIZE    = "small" # small / medium / large
 _C.REID.DATASET.SAMPLER_TYPE    = "random" # random / balanced / None
@@ -56,7 +65,7 @@ _C.REID.DATASET.NUM_INSTANCES   = 6 # Only to be adjusted if sampler_type is eit
 # ========> MODEL CONFIGS <========
 _C.REID.MODEL.NAME                  = 'resnet50_ibn_a' # "resnet50" / "resnet101" / "resnet50_ibn_a" / "resnet101_ibn_a"
 _C.REID.MODEL.PRETRAINED            = True
-_C.REID.MODEL.RUN_FINETUNING        = True  # If True, the weights from _C.REID.TEST.MODEL_VAL_PATH are loaded and the model is fine-tuned
+_C.REID.MODEL.RUN_FINETUNING        = False  # If True, the weights from _C.REID.TEST.MODEL_VAL_PATH are loaded and the model is fine-tuned
 _C.REID.MODEL.USE_GEM               = False
 _C.REID.MODEL.USE_STRIDE            = True
 _C.REID.MODEL.USE_BOTTLENECK        = True
@@ -66,15 +75,16 @@ _C.REID.COLOR_MODEL.NAME            = 'efficientnet-b5' # "svm" / "efficientnet-
 _C.REID.COLOR_MODEL.PRETRAINED_PATH = "./tracking/car-color-classifier/Models/efficientnet-b5_loss-0.1856_acc-94.7458.pt"   # EfficientNet Pre-trained Model
 
 # ========> AUGMENTATION CONFIGS <========
+_C.REID.AUGMENTATION.PADDING_MODE                   = "centered" # "centered" / "aspect_ratio" | For training! MANDATORY -> Look at NOTE n.4
 _C.REID.AUGMENTATION.RESIZE                         = 320 # 320 keeps image aspect ratio. (320, 320) doesn't.
-_C.REID.AUGMENTATION.RANDOM_CROP                    = 320 # 320 keeps image aspect ratio. (320, 320) doesn't.
+_C.REID.AUGMENTATION.RANDOM_CROP                    = 0   # WATCH OUT: Activating random crop with a simple integer number, will resize the image to a square.
 _C.REID.AUGMENTATION.RANDOM_HORIZONTAL_FLIP_PROB    = 0.5
 _C.REID.AUGMENTATION.JITTER_BRIGHTNESS              = 0.0
 _C.REID.AUGMENTATION.JITTER_CONTRAST                = 0.0
 _C.REID.AUGMENTATION.JITTER_SATURATION              = 0.0
 _C.REID.AUGMENTATION.JITTER_HUE                     = 0.0
 _C.REID.AUGMENTATION.COLOR_AUGMENTATION             = True
-_C.REID.AUGMENTATION.PADDING                        = 10
+_C.REID.AUGMENTATION.PADDING                        = 10 # 0 for deactivating padding
 _C.REID.AUGMENTATION.NORMALIZE_MEAN                 = None # [0.485, 0.456, 0.406]
 _C.REID.AUGMENTATION.NORMALIZE_STD                  = None # [0.229, 0.224, 0.225]
 _C.REID.AUGMENTATION.RANDOM_ERASING_PROB            = 0.5
@@ -94,7 +104,7 @@ _C.REID.LOSS.K                  = 2000
 
 # ========> TRAINING CONFIGS <========
 _C.REID.TRAINING.EPOCHS = 160
-_C.REID.TRAINING.BATCH_SIZE = 36
+_C.REID.TRAINING.BATCH_SIZE = 12
 _C.REID.TRAINING.NUM_WORKERS = 0
 # -- Optimizer Configuration
 _C.REID.TRAINING.OPTIMIZER = "adam" # adam / sgd
@@ -140,15 +150,15 @@ _C.REID.TEST.STACK_IMAGES = True # Stack all the images to create a NxN matrix o
 _C.YOLO.TRACKED_CLASS = [(1, 'bicycle'), (2, 'car'), (3, 'motorcycle'), (5, 'bus'), (6, 'train'), (7, 'truck')]
 _C.YOLO.CONFIDENCE_THRESHOLD = 0.20           # Minimum confidence threshold for detections
 _C.YOLO.YOLO_IOU_THRESHOLD = 0.85             # Intersection Over Union (IoU) threshold for Non-Maximum Suppression (NMS)
-_C.YOLO.YOLO_IMAGE_SIZE = (1280, 1280)          # Defines the image size for inference | Either a single integer or a tuple (height, width)
+_C.YOLO.YOLO_IMAGE_SIZE = (1280, 1280)        # Defines the image size for inference | Either a single integer or a tuple (height, width)
 _C.YOLO.USE_AGNOSTIC_NMS = True               # If True, NMS is applied independently to each class
 _C.YOLO.VERBOSE = False
 
 # ========> DETECTOR <========
-_C.DETECTOR.MODEL.NAME = 'yolov9e'
+_C.DETECTOR.MODEL.NAME = 'yolov10x'
 
 # ========> TRACKER <========
-_C.TRACKER.MODEL.NAME = 'yolov9e'
+_C.TRACKER.MODEL.NAME = 'yolov10x'
 _C.TRACKER.YOLO_TRACKER = './tracking/custom_tracker.yaml'       # YOLO Tracker Configuration File (./tracking/custom_tracker.yaml / botsort.yaml / bytetrack.yaml)
 _C.TRACKER.PERSIST = True
 
@@ -161,7 +171,7 @@ _C.TRACKING.MIN_BOX_SIZE = 60
 _C.TRACKING.BOUNDING_BOXES_OUTPUT_PATH = './tracking/bounding_boxes/'   # Necessary just to Debugging purposes
 _C.TRACKING.OUTPUT_PATH = './tracking/output/'                          # Necessary just to Debugging purposes
 _C.TRACKING.SAVE_VIDEO = False                                          # Saves Tracking Video in the folder specified above (Debugging purposes)
-_C.TRACKING.SAVE_BOUNDING_BOXES = True                                  # Saves BBoxes in a folder (Debugging purposes)
+_C.TRACKING.SAVE_BOUNDING_BOXES = False                                  # Saves BBoxes in a folder (Debugging purposes)
 _C.TRACKING.DISP_INFOS = True                                           # Display information on top-left corner of the video
 
 # ============================================================================================= #
@@ -176,24 +186,51 @@ _C.DB.BBOXES_COL = "BBoxes"
 _C.DB.VERBOSE = False
 
 # ============================================================================================= #
+#                                     METRICS CONFIGURATIONS                                    #
+#                                                                                               #
+#       You should care about these only if you want to run MOTA metrics and check results      #
+# ============================================================================================= #
+# The prediction list must be populated only if we run 'python evaluate_AICity.py'
+# If you evaluate a single camera => Use a single MTSC file
+# If you evaluate multiple cameras => Use multple MTMC files
+#
+# Normally, if you run the pipeline with _C.MISC.EVALUATE_METRICS = True, the pipeline
+# will automatically populate this list.
+_C.METRICS.PREDICTIONS = [
+        # "MTMC-predictions_camera-0_2024-12-08_12-12-30.txt", # cam006
+        # "MTMC-predictions_camera-1_2024-12-08_12-12-30.txt", # cam007
+        "MTSC-predictions_camera-2_2024-12-08_23-33-57.txt", # cam008
+        # "MTMC-predictions_camera-3_2024-12-08_12-12-31.txt", # cam009
+    ]
+_C.METRICS.MIN_IOU = 0.30
+_C.METRICS.IGNORE_FP = True
+_C.METRICS.DROP_SINGLE_CAM_TRACKS = True
+
+# ============================================================================================= #
 #                                    PIPELINE CONFIGURATIONS                                    #
 # ============================================================================================= #
-_C.TRACKING.VIDEO_PATH                  = './data/AICity22_Track1_MTMC_Tracking/validation/S02/c008/vdo.avi' # Path to the video file or folder containing the video frames
-_C.MISC.TARGET_COLOR                    = ['blue']                                                   # Target colors for the Re-ID filtering process | [''] / ['red'] / ['blue'] / etc
-_C.DB.USE_DB                            = True                                                      # If True, the pipeline will insert the data into the database
-_C.DB.CLEAN_DB                          = False                                                      # If True, the database will be cleaned before inserting new data
+_C.TRACKING.VIDEO_PATH                  = './data/AICity22_Track1_MTMC_Tracking/validation/S02/c006/vdo.avi' # Path to the video file or folder containing the video frames
 _C.TRACKING.USE_ROI_MASK                = True                                                      # If True, the pipeline will use a ROI mask to track the vehicles
-_C.TRACKING.ROI_MASK_PATH               = './data/AICity22_Track1_MTMC_Tracking/validation/S02/c008/roi.jpg'  # Path to the ROI mask. Leave empty for creating a new one. USE_ROI_MASK must be True.
+_C.TRACKING.ROI_MASK_PATH               = './data/AICity22_Track1_MTMC_Tracking/validation/S02/c006/roi.jpg'  # Path to the ROI mask. Leave empty for creating a new one. USE_ROI_MASK must be True.
+_C.MISC.TARGET_PATH                     = ('./target/Target_2.png', 1)                                    # Path to the target file (PNG + Camera ID)
+_C.MISC.TARGET_COLOR                    = ['']                                                   # Target colors for the Re-ID filtering process | [''] / ['red'] / ['blue'] / etc
+_C.DB.USE_DB                            = True                                                      # If True, the pipeline will insert the data into the database
+_C.DB.CLEAN_DB                          = True                                                      # If True, the database will be cleaned before inserting new data
 _C.MISC.USE_FILTERS                     = False                                                      # If True, the pipeline will use filters to remove unwanted vehicles (color, stationary and incomplete)
 _C.TRACKING.DELETE_MIN_FRAMES           = True                                                     # If True, the pipeline will delete the frames after the tracking process
 _C.TRACKING.SAMPLE_FRAMES               = False                                                     # If True, the pipeline will sample maximum 50 frames to reduce the number of frames stored
-_C.MISC.RUN_PIPELINE                    = True                                                      # If True, the pipeline will run the full process of tracking, Re-ID and DB insertion
 _C.MISC.RUN_UNIFICATION                 = True                                                    # If True, the pipeline will ONLY run the unification process of the database
-_C.REID.TEST.SIMILARITY_ALGORITHM       = "cosine"          # "euclidean"  / "cosine"
-_C.REID.TEST.SIMILARITY_METHOD          = "area_avg"        # "individual" / "mean" / "area_avg"
-_C.MTMC.PICKLE_GLOBAL_PATH              = './tracking/pickle_trajectories/v7' # Path to the pickle file containing the MTMC data
-_C.MTMC.PICKLE_OBJECTS                  = ['tracklets_cam0.pkl',
-                                           'tracklets_cam1.pkl',
-                                           'tracklets_cam2.pkl',
-                                           'tracklets_cam3.pkl',
-                                           ]
+_C.MISC.RUN_PIPELINE                    = True                                                      # If True, the pipeline will run the full process of tracking, Re-ID and DB insertion
+_C.MTMC.SHOW_MTMC_IMAGES                = False                                                    # If True, the pipeline will run the MTMC metrics
+_C.MISC.EVALUATE_METRICS                = True                                                    # If True, the pipeline will run the MTMC metrics
+_C.MISC.RUN_TARGET_SEARCH               = False                                                    # If True, the pipeline will run the Target Search process
+_C.MTMC.USE_PICKLE                      = True                                                    # If True, the pipeline will use the pickle file to load the MTMC/MTSC data
+_C.MTMC.PICKLE_GLOBAL_PATH              = './tracking/pickle_trajectories/v1' # Path to the pickle file containing the MTMC/MTSC data
+
+# Similarity Algorithm and Methods
+_C.REID.TEST.SIMILARITY_ALGORITHM       = "cosine"              # "euclidean"  / "cosine"
+_C.REID.TEST.UNIFICATION_METHOD         = "mean"            # "mean" / "area_avg" / "individual"
+_C.REID.TEST.SIMILARITY_METHOD          = "area_avg"            # "mean" / "area_avg"
+_C.REID.TEST.SIMILARITY_THRESHOLD       = 0.50                  # Threshold for the similarity score
+_C.REID.TEST.LINKAGE_METHOD             = "mean_feature"        # "mean_feature" / "average" / "single" / "complete"
+_C.MTMC.TARGET_SEARCH_METHOD            = "cameralink_search"   # "multitrack_search" / "singletrack_search" / "cameralink_search"

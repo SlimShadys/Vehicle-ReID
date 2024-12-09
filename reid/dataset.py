@@ -43,23 +43,6 @@ def pad_tensor_centered(tensor, target_shape):
     
     return F.pad(tensor, padding, mode='constant', value=0)
 
-# def pad_tensor(tensor, target_shape):
-#     """
-#     Pad a single tensor to match the target shape while maintaining aspect ratio.
-#     Padding is added to the bottom and right of the image.
-#     """
-#     _, h, w = tensor.shape
-#     target_h, target_w = target_shape
-    
-#     # Calculate padding
-#     pad_h = target_h - h if h < target_h else 0
-#     pad_w = target_w - w if w < target_w else 0
-    
-#     # Pad the tensor (pad_left, pad_right, pad_top, pad_bottom)
-#     padding = (0, pad_w, 0, pad_h)
-    
-#     return F.pad(tensor, padding, mode='constant', value=0)
-
 class DatasetBuilder():
     def __init__(self, data_path, dataset_name, dataset_size='small', use_rptm=False, augmentation_configs=None, splittings: Optional[dict] = None):
         """
@@ -106,6 +89,7 @@ class DatasetBuilder():
         self.train_set = ImageDataset(overall_dataset=self.dataset,
                                       data=self.dataset.train,
                                       pkl_file=self.dataset.pkl_file,
+                                      padding_mode=augmentation_configs.PADDING_MODE,
                                       transform=self.transforms.get_train_transform(),
                                       train=True)
         
@@ -116,6 +100,7 @@ class DatasetBuilder():
             self.validation_set = ImageDataset(overall_dataset=self.dataset,
                                             data=self.dataset.query + self.dataset.gallery,
                                             pkl_file=None,
+                                            padding_mode=augmentation_configs.PADDING_MODE,
                                             transform=self.transforms.get_val_transform(),
                                             train=False)
         verbose = True
@@ -177,43 +162,45 @@ class CombinedDataset(Dataset):
         self.total_train_classes = 0
 
         # Offset management for IDs
-        current_offset = 0
-        current_camera_offset = 0
+        vid_offset = 0
+        cam_offset = 0
+
         for dataset, name in zip(self.datasets, self.dataset_names):
-            # get the splitting percentage
+            # Get the splitting percentage
             splitting_percentage = self.splittings[name]
 
-            # randomly sample this _splitting_percentage_ from the dataset
+            # Randomly sample this _splitting_percentage_ from the dataset
             dataset.train = random.sample(dataset.train, int(len(dataset.train) * splitting_percentage))
             dataset.query = random.sample(dataset.query, int(len(dataset.query) * splitting_percentage))
             dataset.gallery = random.sample(dataset.gallery, int(len(dataset.gallery) * splitting_percentage))
-            
+
             # Combine the data
             self.combined_train.extend([(item, name) for item in dataset.train])
             self.combined_query.extend([(item, name) for item in dataset.query])
             self.combined_gallery.extend([(item, name) for item in dataset.gallery])
 
-            # Record the start and end range for this dataset's IDs
-            num_classes = len(set([item[2] for item in dataset.train]))
-            self.dataset_offsets[name] = (current_offset, current_offset + num_classes)
-            current_offset += num_classes + 1
+            # Get unique vehicle IDs and map them to a continuous range starting from vid_offset
+            unique_vid_ids = sorted(set([item[2] for item in dataset.train]))
+            self.dataset_offsets[name] = {original_id: new_id + vid_offset for new_id, original_id in enumerate(unique_vid_ids)}
+            vid_offset += len(unique_vid_ids)  # Update the offset for the next dataset
 
-            num_cams = len(set([item[3] for item in dataset.train]) | set([item[3] for item in dataset.query]) | set([item[3] for item in dataset.gallery]))
-            self.camera_offsets[name] = (current_camera_offset, current_camera_offset + num_cams)
-            current_camera_offset += num_cams + 1
+            # Get unique camera IDs and map them to a continuous range starting from cam_offset
+            unique_cam_ids = sorted(set([item[3] for item in dataset.train]) |
+                                    set([item[3] for item in dataset.query]) |
+                                    set([item[3] for item in dataset.gallery]))
+            self.camera_offsets[name] = {original_id: new_id + cam_offset for new_id, original_id in enumerate(unique_cam_ids)}
+            cam_offset += len(unique_cam_ids)  # Update the offset for the next dataset
 
-        # Take the maximum number of classes by simply taking the maximum of the last dataset
-        # list(self.dataset_offsets.values())[-1] => (start, end)
-        # list(self.dataset_offsets.values())[-1][1] => end
-        self.total_train_classes = list(self.dataset_offsets.values())[-1][1] + 1
-
-    def remap_ids(self, item, dataset_name):
+    def remap_ids(self, item, dataset_name, split):
         """
         Remap IDs to ensure unique IDs across combined datasets.
         """
         img_path, folder, car_id, cam_id, model_id, color_id, type_id, timestamp = item
-        car_id = car_id + self.dataset_offsets[dataset_name][0]
-        cam_id = cam_id + self.camera_offsets[dataset_name][0]
+        cam_id = self.camera_offsets[dataset_name][cam_id]
+
+        if split == 'train':
+            car_id = self.dataset_offsets[dataset_name][car_id]
+
         return (img_path, folder, car_id, cam_id, model_id, color_id, type_id, timestamp)
 
     def get_combined_data(self, split):
@@ -234,7 +221,7 @@ class CombinedDataset(Dataset):
             raise ValueError(f"Unknown split: {split}")
 
         # Remap IDs for each item
-        return [self.remap_ids(item, dataset_name) for item, dataset_name in data]
+        return [self.remap_ids(item, dataset_name, split) for item, dataset_name in data]
 
     @property
     def train(self):
@@ -247,15 +234,16 @@ class CombinedDataset(Dataset):
     @property
     def gallery(self):
         return self.get_combined_data('gallery')
-
+    
     def get_unique_car_ids(self):
-        return self.total_train_classes
+        return len({car_id for _, _, car_id, _, _, _, _, _ in self.train})
 
 class ImageDataset(Dataset):
     def __init__(self,
                  overall_dataset: Union[VehicleID, Veri776, VeriWild, VRIC, VRU, AICity, AICitySim, CombinedDataset],
                  data,
                  pkl_file,
+                 padding_mode='centered',
                  transform=None,
                  train=True):
         """
@@ -263,6 +251,7 @@ class ImageDataset(Dataset):
             overall_dataset (object): The overall dataset object.
             data (list): List of tuples containing the image path, folder, car_id, cam_id, model_id, color_id, type_id, timestamp.
             pkl_file (string): The pickle file containing the indices for the dataset. (ONLY for RPTM Training)
+            padding_mode (string): Padding mode for the images ('centered', 'aspect_ratio').
             transform (callable, optional): Optional transform to be applied on a sample.
             train (bool): Whether the dataset is for training or validation.
         """
@@ -273,6 +262,8 @@ class ImageDataset(Dataset):
         except:
             self.dataset_name = overall_dataset.dataset_names
         self.pkl_file = pkl_file
+
+        self.padding_mode = padding_mode # "aspect_ratio" or "centered"
 
         # Load the index from the pickle file (Needed for RPTM Training)
         if (self.overall_dataset.use_rptm) and (self.pkl_file is not None) and (self.train):
@@ -315,10 +306,27 @@ class ImageDataset(Dataset):
     def train_collate_fn(self, batch) -> tuple[list[str], torch.Tensor, torch.Tensor, torch.Tensor, int, int, int, str]:
         img_paths, imgs, folders, indices, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps = zip(*batch)
 
+        # Padding:
+        #   - "centered"     : We need to pad the images to the same size before stacking them
+        #   - "aspect_ratio" : We do not stack the images, as we do process them one by one in the Trainer
+        if self.padding_mode == 'centered':
+            # Get shapes of all images
+            shapes = [(img.shape[1], img.shape[2]) for img in imgs]
+            
+            # Check if all shapes are the same
+            if len(set(shapes)) == 1:
+                # All images have the same shape, just stack them
+                imgs = torch.stack(imgs, dim=0) # [batch_size, 3, height, width]
+            else:
+                # Images have different shapes, need padding
+                max_h = max(shape[0] for shape in shapes)
+                max_w = max(shape[1] for shape in shapes)
+                
+                padded_imgs = [pad_tensor_centered(img, (max_h, max_w)) for img in imgs]
+                imgs = torch.stack(padded_imgs, dim=0) # [batch_size, 3, height, width]
+
         # Transform Car IDs and Images to Tensors
-        # [batch_size, 3, height, width]
-        imgs = torch.stack(imgs, dim=0)
-        car_ids = torch.tensor(car_ids, dtype=torch.int64)  # [batch_size]
+        car_ids = torch.tensor(car_ids, dtype=torch.int64) # [batch_size]
         cam_ids = torch.tensor(cam_ids, dtype=torch.int64)
         color_ids = torch.tensor(color_ids, dtype=torch.int64)
 
@@ -327,29 +335,27 @@ class ImageDataset(Dataset):
     def val_collate_fn(self, batch) -> tuple[list[str], torch.Tensor, torch.Tensor, torch.Tensor, int, int, int, str]:
         img_paths, imgs, folders, indices, car_ids, cam_ids, model_ids, color_ids, type_ids, timestamps = zip(*batch)
 
-        # Get shapes of all images
-        shapes = [(img.shape[1], img.shape[2]) for img in imgs]
-        
-        # Check if all shapes are the same
-        if len(set(shapes)) == 1:
-            # All images have the same shape, just stack them
-            imgs = torch.stack(imgs, dim=0) # [batch_size, 3, height, width]
-        else:
-            # Images have different shapes, need padding
-            max_h = max(shape[0] for shape in shapes)
-            max_w = max(shape[1] for shape in shapes)
+        # Padding:
+        #   - "centered"     : We need to pad the images to the same size before stacking them
+        #   - "aspect_ratio" : We do nothing here, as we do process them one by one in the Trainer
+        if self.padding_mode == 'centered':
+            # Get shapes of all images
+            shapes = [(img.shape[1], img.shape[2]) for img in imgs]
             
-            padded_imgs = [pad_tensor_centered(img, (max_h, max_w)) for img in imgs]
-            imgs = torch.stack(padded_imgs, dim=0) # [batch_size, 3, height, width]
-
-        # Alternative: Simply resize the images to a fixed size, in this case (320, 320)
-        # imgs = torch.stack([torch.nn.functional.interpolate(
-        #                         img.unsqueeze(0), size=(320, 320),
-        #                         mode='bilinear', align_corners=False).squeeze(0) 
-        #                     for img in imgs], dim=0)
+            # Check if all shapes are the same
+            if len(set(shapes)) == 1:
+                # All images have the same shape, just stack them
+                imgs = torch.stack(imgs, dim=0) # [batch_size, 3, height, width]
+            else:
+                # Images have different shapes, need padding
+                max_h = max(shape[0] for shape in shapes)
+                max_w = max(shape[1] for shape in shapes)
+                
+                padded_imgs = [pad_tensor_centered(img, (max_h, max_w)) for img in imgs]
+                imgs = torch.stack(padded_imgs, dim=0) # [batch_size, 3, height, width]
 
         # Transform Car IDs and Images to Tensors
-        car_ids = torch.tensor(car_ids, dtype=torch.int64)  # [batch_size]
+        car_ids = torch.tensor(car_ids, dtype=torch.int64) # [batch_size]
         cam_ids = torch.tensor(cam_ids, dtype=torch.int64)
         color_ids = torch.tensor(color_ids, dtype=torch.int64)
 
