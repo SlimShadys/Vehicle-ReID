@@ -1,9 +1,8 @@
 import os
 import random
 import sys
-from types import SimpleNamespace
-
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import torch
@@ -14,6 +13,7 @@ from sklearn.svm import SVC
 from torch.optim import Adam
 from torch.utils.data import DataLoader, Dataset
 from torchvision import models
+
 # import weights for EfficientNet B3/B5
 from torchvision.models.efficientnet import (EfficientNet_B3_Weights,
                                              EfficientNet_B5_Weights)

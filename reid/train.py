@@ -1,18 +1,19 @@
-import os
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import argparse
+import os
 import random
+import sys
 
 import numpy as np
 import torch
+from torch.utils.data import DataLoader
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from config import _C as cfg_file
-from reid.dataset import (BalancedIdentitySampler, CombinedDataset, DatasetBuilder,
-                     RandomIdentitySampler)
+from reid.dataset import (BalancedIdentitySampler, CombinedDataset,
+                          DatasetBuilder, RandomIdentitySampler)
 from reid.loss import LossBuilder
 from reid.model import ModelBuilder
-from torch.utils.data import DataLoader
 from reid.training.trainer import Trainer
 
 def set_seed(seed):
@@ -26,6 +27,20 @@ def set_seed(seed):
     torch.backends.cudnn.benchmark = False
     print("Correctly set the seed to:", seed)
 
+# ================== COOL INFOS ==================
+# Training is divided between Triplet Loss + ID Loss.
+# The ID Loss is computed using CrossEntropyLoss,
+# so we need to know the number of classes ONLY in the Training Set.
+#   - AI-City (ai_city)         : 440
+#   - AI-City-Sim (ai_city_sim) : 1362
+#   - AI-City-Mix (ai_city_mix) : 1802
+#   - Vehicle-ID (vehicle_id)   : 13164
+#   - VeRi-776 (veri_776)       : 576
+#   - VeRi-Wild (veri_wild)     : 30671
+#   - VRIC (vric)               : 2811
+#   - VRU (vru)                 : 7086
+# ===============================================
+
 def main(config, seed):
 
     # Set the seed for reproducibility
@@ -33,19 +48,22 @@ def main(config, seed):
 
     # ============= VARIABLES =============
     misc_configs = config.MISC
-    dataset_configs = config.REID.DATASET
-    model_configs = config.REID.MODEL
-    augmentation_configs = config.REID.AUGMENTATION
-    loss_configs = config.REID.LOSS
-    training_configs = config.REID.TRAINING
-    val_configs = config.REID.VALIDATION
-    test_configs = config.REID.TEST
+    reid_configs = config.REID
     
+    # Re-ID variables
+    dataset_configs = reid_configs.DATASET
+    model_configs = reid_configs.MODEL
+    augmentation_configs = reid_configs.AUGMENTATION
+    loss_configs = reid_configs.LOSS
+    training_configs = reid_configs.TRAINING
+    val_configs = reid_configs.VALIDATION
+    test_configs = reid_configs.TEST
+    output_dir = reid_configs.OUTPUT_DIR
+
     # Misc variables
     use_amp = misc_configs.USE_AMP
-    output_dir = misc_configs.OUTPUT_DIR
     device = misc_configs.DEVICE
-    
+
     # Dataset variables
     data_path = dataset_configs.DATA_PATH
     dataset_name = dataset_configs.DATASET_NAME
@@ -103,18 +121,6 @@ def main(config, seed):
     print("===================================================")
     print(F"Torch version: {torch.__version__}")
     print("===================================================")
-
-    # # Number of classes in each dataset (Only for ID classification tasks, hence only training set is considered)
-    # num_classes = {
-    #     'ai_city': 440,
-    #     'ai_city_mix': 1802,
-    #     'ai_city_sim': 1362,
-    #     'vehicle_id': 13164,
-    #     'veri_776': 576,
-    #     'veri_wild': 30671,
-    #     'vric': 2811,
-    #     'vru': 7086,
-    # }
 
     # Create Dataset and DataLoaders
     print(f"Building Dataset:")
@@ -233,7 +239,7 @@ def main(config, seed):
                      'dataset': dataset_builder.dataset, 'transform': dataset_builder.transforms},
         loss_fn=loss_fn,
         device=device,
-        configs=(misc_configs, augmentation_configs, loss_configs, training_configs, val_configs, test_configs)
+        configs=(misc_configs, reid_configs),
     )
     trainer.run()
 

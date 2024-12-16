@@ -1,25 +1,18 @@
-from collections import defaultdict
 import os
 import random
 import re
 import shutil
-import tarfile
-import zipfile
 import zlib
 
 import bson
 import cv2
 import numpy as np
-import pandas as pd
 import requests
 import torch
 import torch.nn as nn
 import torch.utils.model_zoo as model_zoo
 from PIL import Image
 from tqdm import tqdm
-
-from graph.model import GraphEngine
-from sklearn.metrics.pairwise import cosine_similarity
 
 # Custom sort key function to extract the numeric part of the ID
 def extract_numeric_id(vehicle_id):
@@ -674,156 +667,7 @@ def calculate_direction_vector(trajectory_frames):
         # Fallback if we have only one frame (shouldn't happen in your tracking scenario)
         return np.array([0, 0])  # Default direction if we can't calculate a vector
 
-def remove_below_threshold(df, threshold=0.5, method='mean'):
-    rows_to_remove = []
-
-    # Iterate over each query row in the DataFrame
-    for _, query_name in enumerate(df.index):
-
-        # Extract the camera and vehicle from the query name
-        query_cam, query_vehicle = query_name.split('_')[1], query_name.split('_')[2]
-
-        # Get the row for the current query
-        query_similarities = df.loc[query_name, :]
-
-        # Initialize a flag to check if we should remove the query's trajectory
-        remove_trajectory = True
-
-        # Iterate over all gallery trajectories
-        for gallery_vehicle in set(col.split('_')[1] + '_' + col.split('_')[2] for col in df.columns):
-            # Extract cam from gallery_vehicle
-            gallery_cam = gallery_vehicle.split('_')[0]
-
-            if query_cam == gallery_cam:
-                continue  # Skip the same camera
-
-            # Get all columns that belong to the same gallery vehicle (trajectory)
-            gallery_columns = [col for col in df.columns if gallery_vehicle in col]
-
-            # Compute the similarity for the current gallery trajectory
-            if method == 'mean':
-                # Calculate mean similarity for the gallery trajectory
-                mean_similarity = query_similarities[gallery_columns].mean()
-                if mean_similarity >= threshold:
-                    remove_trajectory = False  # If any gallery trajectory is above the threshold, do not remove
-                    break  # Exit the loop since one gallery passed the threshold
-            elif method == 'individual':
-                # Check each individual frame
-                if any(query_similarities[col] >= threshold for col in gallery_columns):
-                    remove_trajectory = False  # If any frame in the gallery trajectory is above the threshold, do not remove
-                    break  # Exit the loop
-            else:
-                raise ValueError(f"Invalid similarity method: {method}")
-            
-        # If the trajectory should be removed, store the vehicle name
-        if remove_trajectory:
-            rows_to_remove.append(f'{query_cam}_{query_vehicle}')  # Store full trajectory name
-
-    # Remove rows that match any vehicle in rows_to_remove
-    for row in rows_to_remove:
-        df.drop(index=[idx for idx in df.index if row in idx], inplace=True)
-
-    return df, rows_to_remove
-
-def compare_trajectories(reid_DB, df, threshold=0.7, method='mean') -> tuple[dict, GraphEngine]:
-    traj = {}
-    G_TRAJ = GraphEngine()
-
-    # Iterate over each query trajectory (rows in DataFrame)
-    for query_idx, query_name in enumerate(df.index):
-        # Extract camera and vehicle from the query name
-        query_cam, query_vehicle = query_name.split('_')[1], query_name.split('_')[2]
-        q_vid = query_cam + '_' + query_vehicle
-
-        # Add q_vid to the Graph
-        G_TRAJ.add_node(q_vid)
-
-        # Extract bounding boxes from the query trajectory
-        q_trajectory = reid_DB.get_vehicle_single_trajectory(query_cam + '_' + query_vehicle)
-        q_start_t = q_trajectory['start_time']
-        q_end_t = q_trajectory['end_time']
-        q_frames = [v[3] for _, v in q_trajectory['trajectory_data'].items()] # We are interested in the BBs only
-
-        # array([x, y])
-        # X represents how much of the vehicle’s movement is in the horizontal direction
-        #   - Rightward if positive, leftward if negative
-        # Y represents how much of the vehicle’s movement is in the vertical direction
-        #   - Upward if positive, downward if negative
-        query_direction_vector = calculate_direction_vector(q_frames)
-
-        # Get the row for the current query
-        query_similarities = df.loc[query_name, :]
-
-        # Add the trajectory to the dictionary since it meets the threshold criteria
-        if (query_name, q_start_t) not in traj:
-            traj[((query_name, q_start_t))] = []
-
-        # Iterate over all gallery trajectories
-        for gallery_vehicle in set(col.split('_')[1] + '_' + col.split('_')[2] for col in df.columns):
-            # Extract cam from gallery_vehicle
-            gallery_cam = gallery_vehicle.split('_')[0]
-
-            is_similar = False
-
-            # Useless to check for same cameras, hence continue
-            if gallery_cam == query_cam:
-                continue
-            else:
-                # Extract bounding boxes from the gallery trajectory
-                g_trajectory = reid_DB.get_vehicle_single_trajectory(gallery_vehicle)
-                g_start_t = g_trajectory['start_time']
-                g_end_t = g_trajectory['end_time']
-                g_frames = [v[3] for _, v in g_trajectory['trajectory_data'].items()] # We are interested in the BBs only
-
-                gallery_direction_vector = calculate_direction_vector(g_frames)
-            
-            # Get all columns that belong to the same gallery vehicle (trajectory)
-            gallery_columns = [col for col in df.columns if gallery_vehicle in col]
-            
-            if method == 'mean':
-                # Calculate the mean similarity for the gallery trajectory
-                mean_similarity = query_similarities[gallery_columns].mean()
-                if mean_similarity >= threshold:
-                    is_similar = True
-            elif method == 'individual':
-                # Check each individual frame
-                for col in gallery_columns:
-                    if query_similarities[col] >= 0.82:
-                        is_similar = True
-                        break  # No need to continue with other frames if one already passed the threshold
-            else:
-                raise ValueError(f"Invalid similarity method: {method}")
-
-            if is_similar:
-                # CHECK FOR DIRECTION!
-                direction_similarity = cosine_similarity(query_direction_vector.reshape(1, -1), gallery_direction_vector.reshape(1, -1)).item()
-
-                # if direction_similarity >= 0.70:
-
-                # ===================== #
-                #  CHECK FOR TIMESTAMP! #
-                # ===================== #
-                # If the difference is less than 5 seconds, we can consider them as the same trajectory
-                # If the difference is greater than 5 seconds, we can consider them as different trajectories
-                # We can use the start_time and end_time of the trajectory to determine this
-                time_difference = get_camera_time_difference(reid_DB,
-                                                             int(query_cam.split('CAM')[-1]),
-                                                             int(gallery_cam.split('CAM')[-1]))
-                real_diff = time_difference * 0.01 + 5.00 # For testing purposes
-                if abs(q_start_t - g_start_t) > real_diff:
-                    continue
-                else:
-                    g_vid = gallery_vehicle
-                    G_TRAJ.add_node(g_vid)
-                    G_TRAJ.add_edge(q_vid, g_vid, weight=mean_similarity + direction_similarity)
-                    traj[(query_name, q_start_t)].append({gallery_vehicle: (mean_similarity, g_start_t)})
-                    print(f"Trajectory Q{query_cam}_{query_vehicle} is similar to Trajectory G_{gallery_vehicle} (Mean Similarity: {mean_similarity:.2f}, Direction Similarity: {direction_similarity:.2f})")
-
-        print("===============================================")
-
-    return traj, G_TRAJ
-
-# Get the time difference between two cameras
+# Get the time difference between two cameras (could be synthetic -3D Distance- or real -Haversine Distance-)
 def get_camera_time_difference(reid_DB, q_cam, g_cam):
     scales = {(0, 1): 0.803, (1, 0): 1.246}  # 1.246 is the reciprocal of 0.803, for reverse direction
     offsets = {(0, 1): 2.76, (1, 0): -2.76}  # Negative offset for reverse direction
@@ -865,6 +709,25 @@ def get_driving_distance(start_latitude, start_longitude, end_latitude, end_long
     time = response.get('routes', [])[0].get('duration')
     return distance, time
 
+def calculate_distance_3d(coord1, coord2, use_z=True):
+    """Calculate 3D or 2D distance between two points."""
+    if use_z:
+        return np.sqrt((coord2[0] - coord1[0]) ** 2 + (coord2[1] - coord1[1]) ** 2 + (coord2[2] - coord1[2]) ** 2)
+    else:
+        return np.sqrt((coord2[0] - coord1[0]) ** 2 + (coord2[1] - coord1[1]) ** 2)
+
+def haversine_distance(coord1, coord2):
+    """Calculate the great-circle distance between two points on the Earth's surface."""
+    R = 6371  # Radius of the Earth in kilometers
+    lat1, lon1 = coord1
+    lat2, lon2 = coord2
+    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = np.sin(dlat / 2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2)**2
+    c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+    return R * c
+
 def calculate_iou(box1, box2):
     """Calculate Intersection over Union (IoU) between two bounding boxes.
     box format: [x_center, y_center, width, height]
@@ -887,22 +750,3 @@ def calculate_iou(box1, box2):
     box2_area = (x2_max - x2_min) * (y2_max - y2_min)
 
     return inter_area / (box1_area + box2_area - inter_area)
-
-def calculate_distance_3d(coord1, coord2, use_z=True):
-    """Calculate 3D or 2D distance between two points."""
-    if use_z:
-        return np.sqrt((coord2[0] - coord1[0]) ** 2 + (coord2[1] - coord1[1]) ** 2 + (coord2[2] - coord1[2]) ** 2)
-    else:
-        return np.sqrt((coord2[0] - coord1[0]) ** 2 + (coord2[1] - coord1[1]) ** 2)
-
-def haversine_distance(coord1, coord2):
-    """Calculate the great-circle distance between two points on the Earth's surface."""
-    R = 6371  # Radius of the Earth in kilometers
-    lat1, lon1 = coord1
-    lat2, lon2 = coord2
-    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = np.sin(dlat / 2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2)**2
-    c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
-    return R * c

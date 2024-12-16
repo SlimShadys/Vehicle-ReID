@@ -1,13 +1,12 @@
 import argparse
 import os
-import sys
 from typing import List, Union
 
 import motmetrics as mm
 import numpy as np
 import pandas as pd
-from yacs.config import CfgNode
 import yaml
+from yacs.config import CfgNode
 
 from config import _C as cfg_file
 
@@ -133,6 +132,7 @@ def run_evaluation(cfg: CfgNode, camera_configs):
 
     # Setup Camera configs and Layout
     preds = cfg.METRICS.PREDICTIONS
+        
     gt = []
         
     for _, camera_data in camera_configs.items():
@@ -197,11 +197,11 @@ if __name__ == "__main__":
         print("\n".join(infos))
 
     # # MTMC configs
-    # path = 'configs\\cameras_s02_cityflow.yml'
+    # path = os.path.join("configs", "cameras_s02_cityflow.yml")
     # mode = 'MTMC'
 
     # MTSC configs
-    path = 'configs\\camera_s02_cityflow.yml'
+    path = os.path.join("configs", "camera_s02_cityflow.yml")
     mode = 'MTSC'
 
     camera_configs = args.config if args.config else path

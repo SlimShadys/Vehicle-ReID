@@ -3,17 +3,22 @@ import os
 
 import numpy as np
 import yaml
+
 from evaluate_AICity import run_evaluation
 from misc.printer import Logger
-from pipeline import load_config_and_device, load_models_and_transformations, \
-                    run_mtsc, run_mtmc, setup_database
+from pipeline import (load_config_and_device, load_models_and_transformations,
+                      run_mtmc, run_mtsc, setup_database)
 
-def main(cam_configs):
-    # Initialize logger
-    logger = Logger()
-    
+def main(cam_configs):    
     # Load configuration and initialize device
     cfg, device = load_config_and_device()
+    
+    # Update the Pickle Global Path to inglobe the Test Name
+    test_name = cfg.MISC.TEST_NAME
+    cfg.MTMC.PICKLE_GLOBAL_PATH = os.path.join(cfg.MTMC.PICKLE_GLOBAL_PATH, test_name)
+    
+    # Initialize logger
+    logger = Logger(name=test_name)
     
     # Load models and transformations
     yolo_model, model, car_classifier, transforms = load_models_and_transformations(device, cfg)
@@ -63,7 +68,7 @@ def main(cam_configs):
         if db is not None:
             if db.cameras_col.find_one({'_id': camera_data['_id']}) is not None:
                 logger.error(f"Camera with ID {camera_data['_id']} is already in the database.")
-                #raise ValueError()
+                raise ValueError()
             else:
                 logger.debug("Inserting Camera into the database...")
                 db.insert_camera(camera_data)
@@ -121,12 +126,17 @@ def main(cam_configs):
             # Log the formatted string
             logger.info(f"Performance for {formatted_name} | MIN: {min_val:.4f} | MEAN: {mean_val:.4f} | MAX: {max_val:.4f}")
 
+    # Print DB status if available
+    if db is not None:
+        logger.info("Database status:")
+        db.verbose = True
+        db.print_status()
+
     if cfg.MISC.EVALUATE_METRICS:
         logger.info("Evaluating MTMC results...")
 
         # Retrieve the MTMC files and place them in cfg.METRICS.PREDICTIONS
-        mtmc_files = [f for f in os.listdir() if f.startswith('MTMC-predictions_camera') and f.endswith('.txt')]
-        cfg.METRICS.PREDICTIONS = mtmc_files
+        cfg.METRICS.PREDICTIONS = sorted([f for f in os.listdir() if f.startswith(f'{test_name}-MTMC-predictions_camera') and f.endswith('.txt')])
 
         results = run_evaluation(cfg, camera_configs)
         logger.info("MTMC Evaluation results:\n" + results + "\n")
@@ -147,7 +157,7 @@ if __name__ == '__main__':
     parser.add_argument("--config", required=False, help="Path to the cameras configuration file (YAML format).")
     args = parser.parse_args()
 
-    camera_configs = args.config if args.config else 'configs\\cameras_s02_cityflow.yml'
+    camera_configs = args.config if args.config else os.path.join("configs", "cameras_s02_cityflow.yml")
 
     # Load cameras data from YAML file
     with open(camera_configs, 'r') as f:

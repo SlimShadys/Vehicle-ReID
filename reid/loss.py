@@ -1,11 +1,12 @@
 import numpy as np
 import torch
 import torch.nn as nn
-from reid.losses.supcon_loss import SupConLoss
-from reid.losses.triplet_loss import TripletLoss, TripletLossRPTM
 from pytorch_metric_learning import distances as py_distances
 from pytorch_metric_learning import losses as py_losses
 from pytorch_metric_learning import miners as py_miners
+
+from reid.losses.supcon_loss import SupConLoss
+from reid.losses.triplet_loss import TripletLoss, TripletLossRPTM
 
 class LossBuilder(nn.Module):
     def __init__(self, loss_type="TripletLoss", alpha=0.9, k=10, margin=0.3, label_smoothing=0.1, apply_MALW=False, batch_size=20, use_amp=False) -> torch.nn.Module:

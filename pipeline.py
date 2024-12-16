@@ -61,7 +61,6 @@ from tracking.model import load_yolo
 from tracking.track import Track, Trajectory
 from tracking.unification import get_max_similarity_per_vehicle
 
-
 def fliplr(img):
     """ flip a batch of images horizontally """
     # N x C x H x W
@@ -142,7 +141,8 @@ db_cfg = cfg_file.DB
 # Number of classes in each dataset (Only for ID classification tasks, hence only training set is considered)
 num_classes = {
     'ai_city': 440,
-    'ai_city_sim': 1802,
+    'ai_city_mix': 1802,
+    'ai_city_sim': 1362,
     'vehicle_id': 13164,
     'veri_776': 576,
     'veri_wild': 30671,
@@ -307,8 +307,9 @@ def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data,
     # If GT is available, we must run MOTA metrics
     cfg_file.TRACKING.GT = camera_data.get('gt', None)
     if cfg_file.TRACKING.GT:
+        test_name = cfg_file.MISC.TEST_NAME
         date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        output_file = f'MTSC-predictions_camera-{camera_data["_id"]}_{date}.txt'
+        output_file = f'{test_name}-MTSC-predictions_camera-{camera_data["_id"]}_{date}.txt'
 
         pickle_global_path = cfg_file.MTMC.PICKLE_GLOBAL_PATH
         if not os.path.exists(pickle_global_path):
@@ -537,7 +538,7 @@ def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data,
                                 continue
 
                         if tracking_cfg.SAMPLE_FRAMES:
-                            chunk_dict[id]['frames'] = sample_trajectory_frames(chunk_dict[id]['frames'], min_samples=5, max_samples=3000)
+                            chunk_dict[id]['frames'] = sample_trajectory_frames(chunk_dict[id]['frames'], min_samples=5, max_samples=500)
                             
                         perf_timer.register_call("Minor filtering")
                     
@@ -901,16 +902,16 @@ def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data,
         # data['frame_number'], data['bounding_box'], data['timestamp'],
         # data['confidence'], data['vehicle_id']
         all_frames = reid_DB.get_camera_frames(camera_data['_id'])
-        for id in all_frames:
+        for _id in all_frames:
             # Get all relevant information about this ID
-            frames = all_frames[id]
+            frames = all_frames[_id]
 
             # Get vehicle ID
-            id = id.split('V')[-1]
+            _id = _id.split('V')[-1]
 
             # Get properties
             features = [v[0] for _, v in frames.items()]
-            # compressed_images = [v[1] for _, v in frames.items()]
+            compressed_images = [v[1] for _, v in frames.items()]
             shapes = [v[2] for _, v in frames.items()]
             frame_numbers = [v[3] for _, v in frames.items()]
             bboxes = [v[4] for _, v in frames.items()]
@@ -923,7 +924,7 @@ def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data,
             for bbox, frame_num in zip(bboxes, frame_numbers):
                 tx, ty, w, h = bbox
                 res['frame'].append(frame_num)
-                res['track_id'].append(id)
+                res['track_id'].append(_id)
                 res['bbox_topleft_x'].append(int(tx))
                 res['bbox_topleft_y'].append(int(ty))
                 res['bbox_width'].append(int(round(w)))
@@ -931,8 +932,9 @@ def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data,
 
             # Append to pickle
             pickle_tracklets.append({
-                'id': id,
+                'id': _id,
                 'features': features,
+                'compressed_images': compressed_images,
                 'shapes': shapes,
                 'frame_numbers': frame_numbers,
                 'bboxes': bboxes,
@@ -953,7 +955,7 @@ def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data,
         # Export the pickle file
         pickle_path = os.path.join(pickle_global_path, f"tracklets_cam{camera_data['_id']}.pkl")
         with open(pickle_path, 'wb') as f:
-            pickle.dump(pickle_tracklets, f)
+            pickle.dump(pickle_tracklets, f, protocol=pickle.HIGHEST_PROTOCOL)
 
     return records
 
@@ -973,29 +975,31 @@ def run_mtmc(similarity_method, db, cam_layout, cfg, logger):
     USE_DB = db_cfg.USE_DB
     reid_DB = db if USE_DB else None
 
-    logger.info("Gathering all frames...")
     log_start_time = time.time()
 
     # Fallback to Pickle first
     if cfg_file.MTMC.USE_PICKLE:
+        logger.info("Gathering all frames from pickle...")
+
         pickle_objs_files = os.listdir(cfg_file.MTMC.PICKLE_GLOBAL_PATH)
 
         # Filter only for files which ends with .pkl and starts with "tracklets_cam"
-        pickle_objs_files = [file for file in pickle_objs_files if file.endswith('.pkl') and file.startswith('tracklets_cam')]
+        pickle_objs_files = sorted([file for file in pickle_objs_files if file.endswith('.pkl') and file.startswith('tracklets_cam')])
 
         if len(pickle_objs_files) != cams.n_cams:
             logger.error("Number of Pickle files does not match the number of cameras.")
             raise Exception()
 
         all_frames = {}
-        for i, pickle_path in enumerate(pickle_objs_files):   # PICKLE SINGLE FILES
+        for i, pickle_path in enumerate(pickle_objs_files): # PICKLE SINGLE FILES
             path = os.path.join(cfg_file.MTMC.PICKLE_GLOBAL_PATH, pickle_path)
             with open(path, "rb") as f:
                 res = pickle.load(f)
+                            
                 # We must have the same schema as get_all_frames() from the Database
                 for r in res:
                     vehicle_id = r['vehicle_ids'][0]  # Assuming vehicle_id is consistent across the frames
-
+                
                     # Loop over frame numbers and other associated data
                     for j in range(len(r['frame_numbers'])):
                         frame_number = r['frame_numbers'][j]
@@ -1014,7 +1018,8 @@ def run_mtmc(similarity_method, db, cam_layout, cfg, logger):
                             'frame_number': frame_number,
                             'bounding_box': r['bboxes'][j],
                             'features': r['features'][j],
-                            'compressed_image': None,
+                            # 'compressed_image': None,
+                            'compressed_image': r['compressed_images'][j],
                             'shape': r['shapes'][j],
                             'timestamp': r['timestamps'][j],}
                             })
@@ -1024,6 +1029,7 @@ def run_mtmc(similarity_method, db, cam_layout, cfg, logger):
         # We will then run the ReID model on each frame and compare the features
         # If the features are similar, we will consider them as the same vehicle
         # If the features are different, we will consider them as different vehicles
+        logger.info("Gathering all frames from DB...")
         all_frames = reid_DB.get_all_frames()
     else:
         logger.error("No valid input provided. Please provide either a list of Pickle paths or a valid Database connection.")
@@ -1036,7 +1042,7 @@ def run_mtmc(similarity_method, db, cam_layout, cfg, logger):
     # all_frames must be constructed in this way:
     # - List of Track objects, where in each Track object, we have the following:
     #   - ID of the vehicle
-    #   - Mean Feature of the vehicle
+    #   - Mean Feature of the vehicle trajectory
     #   - Global Start Time of the vehicle trajectory
     #   - Global End Time of the vehicle trajectory
     all_frames_tracks = []
@@ -1054,8 +1060,8 @@ def run_mtmc(similarity_method, db, cam_layout, cfg, logger):
 
             # Frame of the first and last timestamps
             try: # DB format
-                first_frame_index = int(first_frame_index.split("F")[-1])
-                last_frame_index = int(last_frame_index.split("F")[-1])
+                first_frame_index = int(first_frame_index.split("F")[-1]) + 1
+                last_frame_index = int(last_frame_index.split("F")[-1]) + 1
             except: # Pickle format
                 first_frame_index = int(first_frame_index)
                 last_frame_index = int(last_frame_index)
@@ -1192,7 +1198,8 @@ def run_mtmc(similarity_method, db, cam_layout, cfg, logger):
     pickle_global_path = cfg_file.MTMC.PICKLE_GLOBAL_PATH
     for i, cam_track_list in tqdm(enumerate(camera_tracks), desc="Saving final MTMC predictions", unit="Camera", total=len(camera_tracks)):
         date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        output_file = f'MTMC-predictions_camera-{i}_{date}.txt'
+        test_name = cfg_file.MISC.TEST_NAME
+        output_file = f'{test_name}-MTMC-predictions_camera-{i}_{date}.txt'
 
         pickle_tracklets = []
         res = {
@@ -1237,7 +1244,7 @@ def run_mtmc(similarity_method, db, cam_layout, cfg, logger):
 
             # Append to pickle
             pickle_tracklets.append({
-                'id': id,
+                'id': track.id,
                 'features': features,
                 # 'shapes': shapes,
                 'frame_numbers': frame_numbers,
@@ -1258,7 +1265,7 @@ def run_mtmc(similarity_method, db, cam_layout, cfg, logger):
         # Export the pickle file
         pickle_path = os.path.join(pickle_global_path, f"multitracklet_cam{i}.pkl")
         with open(pickle_path, 'wb') as f:
-            pickle.dump(pickle_tracklets, f)
+            pickle.dump(pickle_tracklets, f, protocol=pickle.HIGHEST_PROTOCOL)
 
     if cfg_file.MTMC.SHOW_MTMC_IMAGES == True:
         # We do need to show some results starting from the camera_tracks
@@ -1418,4 +1425,4 @@ def run_mtmc(similarity_method, db, cam_layout, cfg, logger):
         target_path, target_cam = cfg_file.MISC.TARGET_PATH
         target = {"path": target_path, "camera": target_cam}
         target_search(target, final_trajectories, all_frames_tracks, cams, cfg)
-    # ======================================================
+    # ====================================================== #

@@ -1,9 +1,9 @@
 import os
 
-from matplotlib import pyplot as plt
 import numpy as np
-import torch
 import seaborn as sns
+import torch
+from matplotlib import pyplot as plt
 
 from misc.utils import euclidean_dist, read_image
 from reid.datasets.transforms import Transformations
@@ -69,9 +69,9 @@ def compute_multiple_images_similarity(model, device, similarity_method, val_tra
     exit(1)
 
 from config import _C as cfg_file
-from reid.model import ModelBuilder
 from misc.printer import Logger
 from misc.utils import set_seed
+from reid.model import ModelBuilder
 from tracking.model import load_yolo
 
 # Number of classes in each dataset (Only for ID classification tasks, hence only training set is considered)

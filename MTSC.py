@@ -1,20 +1,23 @@
 import argparse
 import os
-import sys
 
 import yaml
+
 from evaluate_AICity import run_evaluation
 from misc.printer import Logger
-from pipeline import load_config_and_device, load_models_and_transformations, \
-                    run_mtsc, setup_database
+from pipeline import (load_config_and_device, load_models_and_transformations,
+                      run_mtsc, setup_database)
 
 def main(camera):
-    # Initialize logger
-    logger = Logger()
-
     # Load configuration and initialize device
     cfg, device = load_config_and_device()
+
+    # Get Test name
+    test_name = cfg.MISC.TEST_NAME
     
+    # Initialize logger
+    logger = Logger(name=test_name)
+  
     # Load models and transformations
     yolo_model, model, car_classifier, transforms = load_models_and_transformations(device, cfg)
     
@@ -76,8 +79,7 @@ def main(camera):
 
         # Retrieve the MTSC file files and place it in cfg.METRICS.PREDICTIONS
         cam_num = int(camera_name.split("_")[-1])
-        mtsc_file = [f for f in os.listdir() if f.startswith(f'MTSC-predictions_camera-{cam_num}') and f.endswith('.txt')]
-        cfg.METRICS.PREDICTIONS = mtsc_file
+        cfg.METRICS.PREDICTIONS = [f for f in os.listdir() if f.startswith(f'{test_name}-MTSC-predictions_camera-{cam_num}') and f.endswith('.txt')]
 
         results = run_evaluation(cfg, camera_configs)
         logger.info("MTSC Evaluation results:\n" + results + "\n")
@@ -98,7 +100,7 @@ if __name__ == '__main__':
     parser.add_argument("--config", required=False, help="Path to the camera configuration file (YAML format).")
     args = parser.parse_args()
 
-    camera_config = args.config if args.config else 'configs\\camera_s02_cityflow.yml'
+    camera_config = args.config if args.config else os.path.join("configs", "camera_s02_cityflow.yml")
 
     # Load camera data from YAML file
     with open(camera_config, 'r') as f:

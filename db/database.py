@@ -1,6 +1,11 @@
 import pymongo
+import os
+import sys
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
+
+from config import _C as cfg_file
 from misc.printer import Logger
-from copy import deepcopy
 
 # Wrapper for MongoDB Database connection
 class Database():
@@ -39,6 +44,18 @@ class Database():
         self.cameras_col.drop()
         self.trajectories_col.drop()
         self.bboxes_col.drop()
+
+    def print_status(self):
+        if self.verbose:
+            self.logger.debug("Database Status:")
+            self.logger.debug(f"Vehicles Collection: {self.vehicles_col.count_documents({})} documents")
+            self.logger.debug(f"Cameras Collection: {self.cameras_col.count_documents({})} documents")
+            self.logger.debug(f"Trajectories Collection: {self.trajectories_col.count_documents({})} documents")
+            self.logger.debug(f"BBoxes Collection: {self.bboxes_col.count_documents({})} documents")
+            
+            # Get DB Size in MB
+            db_stats = self.db.command("dbstats")
+            self.logger.debug(f"Database Size: {db_stats['dataSize'] / 1024 / 1024:.2f} MB")
 
     def insert_vehicle(self, vehicle):
         if self.verbose: self.logger.debug(f"Inserting vehicle with ID: {vehicle['_id']}")
@@ -130,41 +147,6 @@ class Database():
         else:
             if self.verbose:
                 self.logger.debug("No documents found to update.")
-        # # Find all documents with the old vehicle_id
-        # documents = self.bboxes_col.find({'vehicle_id': old_vid})
-
-        # # Get latest frame_number from the new vehicle_id and increment it by 1
-        # frame_number = int([data for data in self.bboxes_col.find({'vehicle_id': new_vid})][-1]['_id'].split('_F')[-1]) + 1
-
-        # # Prepare a list of update operations
-        # updates = []
-
-        # for i, doc in enumerate(documents):
-        #     # Create the new _id by replacing the old vehicle ID with the new one
-        #     new_id = f"{new_vid}_F{frame_number + i}"
-
-        #     # Create an update operation to change both _id and vehicle_id
-        #     update_operation = pymongo.InsertOne(
-        #         {'_id'              : new_id,       # Update the _id to the new one
-        #         'frame_number'      : doc['frame_number'],
-        #         'vehicle_id'        : new_vid,      # Update the vehicle_id to the new one
-        #         'compressed_image'  : doc['compressed_image'],
-        #         'bounding_box'      : doc['bounding_box'],
-        #         'confidence'        : doc['confidence'],
-        #         'features'          : doc['features'],
-        #         'shape'             : doc['shape'],
-        #         'timestamp'         : doc['timestamp'],
-        #         }
-        #     )
-        #     updates.append(update_operation)                        # Append the update operation to the list
-        #     updates.append(pymongo.DeleteOne({'_id': doc['_id']}))  # Delete the old document
-                                                  
-        # # Execute the updates in bulk
-        # if updates:
-        #     self.bboxes_col.bulk_write(updates)
-        #     if self.verbose: self.logger.debug(f"Updated {len(updates)} documents. Merged vehicle {old_vid} into {new_vid}.")
-        # else:
-        #     if self.verbose: self.logger.debug("No documents found to update.")
 
     def update_trajectory(self, new_vid, old_vid):
         # Step 1: Retrieve the trajectory for the new vehicle
@@ -446,22 +428,19 @@ class Database():
             return frames_dict
 
     def get_all_frames(self):
+
+        # Dictionary to store the results
+        frames_dict = {}
+
         db_frames = self.trajectories_col.aggregate([
             {
                 '$project': {
                     '_id': 0, 
                     'vehicle_id': 1, 
                     'camera_id': 1,
-                    # "trajectory_data._id": 1,
-                    # 'trajectory_data.compressed_image': 1,
-                    # 'trajectory_data.shape': 1, 
-                    # 'trajectory_data.features': 1
                 }
             }
         ])
-
-        # Dictionary to store the results
-        frames_dict = {}
 
         # Iterate over the query results and construct the dictionary
         for x in db_frames:
@@ -488,10 +467,37 @@ class Database():
             if camera_id not in frames_dict:
                 frames_dict[camera_id] = {}
 
-            frames_dict[camera_id][vehicle_id] = {data['_id']: [data['frame_number'], data['bounding_box'], data['features'], data['compressed_image'], data['shape'], data['timestamp']] for data in trajectory_data}
+            # Initialize the vehicle entry in the camera if it doesn't exist
+            if vehicle_id not in frames_dict[camera_id]:
+                frames_dict[camera_id][vehicle_id] = {}
+
+            for data in trajectory_data:
+                # Append the frame data to the vehicle entry for this camera
+                frames_dict[camera_id][vehicle_id].update(
+                    {data['frame_number']: {
+                        'frame_number': data['frame_number'],
+                        'bounding_box': data['bounding_box'],
+                        'features': data['features'],
+                        'compressed_image': None,#data['compressed_image'],
+                        'shape': data['shape'],
+                        'timestamp': data['timestamp'],
+                        }
+                    }
+                )
 
         return frames_dict
     
     def get_camera(self, camera_id):
         camera = self.cameras_col.find_one({'_id': camera_id})
         return camera
+
+if __name__ == '__main__':
+    # Get an instance of the logger
+    logger = Logger()
+    
+    # Create a new database object
+    cfg_file.DB.VERBOSE = True
+    db = Database(db_configs=cfg_file.DB, logger=logger)
+
+    # Print the database status
+    db.print_status()

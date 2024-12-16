@@ -1,5 +1,5 @@
-from ultralytics import YOLO
 import yacs.config
+from ultralytics import YOLO
 
 def load_yolo(config: yacs.config.CfgNode):
     yolo_name = config.DETECTOR.MODEL.NAME

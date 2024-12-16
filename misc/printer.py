@@ -2,7 +2,7 @@ import logging
 import datetime
 
 class Logger():
-    def __init__(self, level=None):
+    def __init__(self, level=None, name=None):
         self.depth = 0
         self.INDENT = "  "
         self.logger = logging.getLogger("MTMC")
@@ -36,7 +36,7 @@ class Logger():
             self.logger.addHandler(console_handler)
 
             # Create a FileHandler (for file output) with the actual date
-            handler = logging.FileHandler(f'log-{datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.txt')
+            handler = logging.FileHandler(f'{name}_log-{datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.txt')
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
 

@@ -3,11 +3,10 @@ import numpy as np
 from matplotlib import pyplot as plt
 from tqdm import tqdm
 
+from config import _C as cfg_file
 from db.database import Database
 from misc.printer import Logger
 from misc.utils import decompress_img, is_incomplete
-
-from config import _C as cfg_file
 
 # Logger
 logger = Logger()

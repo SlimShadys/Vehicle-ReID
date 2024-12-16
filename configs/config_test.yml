@@ -1,15 +1,17 @@
 # === MISC CONFIGURATION ===
 MISC:
-  OUTPUT_DIR: "results_test"
   DEVICE: "cuda"
   GPU_ID: 0
 
 # === DATASET CONFIGURATION ===
 REID:
+  OUTPUT_DIR: "results_test"
   DATASET:
     DATA_PATH: "./data"
-    DATASET_NAME: ['vric', 'ai_city', 'ai_city_sim'] # ai_city / ai_city_mix / ai_city_sim / vehicle_id / veri_776 / veri_wild / vric / vru
-    SPLITTINGS: [('vric', 0.2481), ('ai_city', 0.3528), ('ai_city_sim', 0.026)] # Only to be adjusted if dataset_name is a list (CombinedDataset)
+    # 'dataset_name' can also be a list (e.g. ['vric', 'ai_city', 'ai_city_sim']).
+    # If so, the dataset will be a CombinedDataset and you need to populate the Splitting settings (e.g. [('vric', 0.2481), ('ai_city', 0.3528), ('ai_city_sim', 0.026)])!
+    DATASET_NAME: 'ai_city' # ai_city / ai_city_sim / ai_city_mix / vehicle_id / veri_776 / veri_wild / vric / vru
+    SPLITTINGS: None # Only to be adjusted if dataset_name is a list (CombinedDataset)
     DATASET_SIZE: "small" # small / medium / large
     SAMPLER_TYPE: "random" # random / balanced / None
     NUM_INSTANCES: 6 # Only to be adjusted if sampler_type is either "random" or "balanced"
@@ -45,4 +47,4 @@ REID:
     PATH_IMG_1: "./data/test/honda_f.jpg"
     PATH_IMG_2: "./data/test/honda_f_2.jpg"
     SIMILARITY_ALGORITHM: "cosine" # "euclidean" / "cosine"
-    MODEL_VAL_PATH: "./reid/results/Test-14/model_ep-158_loss-0.0275.pth"
+    MODEL_VAL_PATH: "./reid/results/Test-31/model_ep-156_loss-0.0578.pth"

@@ -1,13 +1,16 @@
-from PIL import Image
 import numpy as np
-from numpy.linalg import norm
 import torch
+from matplotlib import pyplot as plt
+from numpy.linalg import norm
+from PIL import Image, ImageOps
+from torchvision import transforms as T
 from tqdm import tqdm
+from yacs.config import CfgNode
 
+from misc.utils import decompress_img
 from reid.datasets.transforms import Transformations
 from reid.model import ModelBuilder
 from tracking.cameras import CameraLayout
-from yacs.config import CfgNode
 
 num_classes = {
     'ai_city': 440,
@@ -75,7 +78,7 @@ def multitrack_search(features, final_tracks, target_cam, K=5):
     top_k_tracks = [final_tracks[i] for i in top_k_indices]
 
     # Filter the similarity matrix based on the top-K indices
-    sim_matrix = sim_matrix[top_k_indices]
+    similarity_matrix = similarity_matrix[top_k_indices]
 
     return similarity_matrix, top_k_tracks
 
@@ -129,11 +132,8 @@ def cameralink_search(
     # Initialize the trajectory dictionary
     trajectory = {i: [] for i in range(K)}
 
-    # filter out the tracks from the same camera as the target image
-    first_cam_tracks = [track for track in all_frames_tracks if track.cam == 0]
-
-    # Get the features of all the tracks
-    f = torch.Tensor(np.stack([track._mean_feature for track in first_cam_tracks])).to(device)
+    # Get the features of all the tracks from Camera 0
+    f = torch.Tensor(np.stack([track._mean_feature for track in camera_tracks[0]])).to(device)
 
     # Compute similarity matrix
     sim_matrix = torch.matmul(target_feat, f.T).squeeze()
@@ -149,26 +149,24 @@ def cameralink_search(
     top_k_indices = top_k_indices[:K] if len(top_k_indices) >= K else top_k_indices
 
     # Get the top-K most similar tracks
-    top_k_tracks = [all_frames_tracks[i] for i in top_k_indices.tolist()]
+    top_k_tracks = [camera_tracks[0][i] for i in top_k_indices.tolist()]
     
     # Convert Target Feature to a numpy array
     target_feat = target_feat.detach().cpu().numpy()
 
     # Append the top-K tracks to the trajectory
     for i, track in enumerate(top_k_tracks):
-        trajectory[i].append(track)
+        trajectory[i].append((track, sim_matrix[i].item()))
 
     # ==== OTHER CAMERAS ====
     for cam_id in range(1, cams.n_cams):
-        # filter out the tracks from the same camera as the target image
-        other_cam_tracks = [track for track in all_frames_tracks if track.cam == cam_id]
 
         # Skip if there are no tracks in the current camera
-        if not other_cam_tracks:
+        if len(camera_tracks[cam_id]) == 0:
             continue
 
-        # Get the features of all the tracks
-        f = torch.Tensor(np.stack([track._mean_feature for track in other_cam_tracks])).to(device)
+        # Get the features of all the tracks for this camera
+        f = torch.Tensor(np.stack([track._mean_feature for track in camera_tracks[cam_id]])).to(device)
 
         for i in range(K):
 
@@ -180,7 +178,7 @@ def cameralink_search(
             if not trajectory[i]:
                 continue
 
-            k_feat_mean = torch.Tensor(np.mean([track._mean_feature for track in trajectory[i]], axis=0)).to(device)
+            k_feat_mean = torch.Tensor(np.mean([track._mean_feature for track, _ in trajectory[i]], axis=0)).to(device)
 
             # Compute similarity matrix
             sim_matrix = torch.matmul(k_feat_mean, f.T).squeeze()
@@ -192,13 +190,13 @@ def cameralink_search(
             # Retrieve the top most similar track
             top_track_idx = torch.argmax(sim_matrix)
 
-            if top_track_idx >= len(other_cam_tracks):
+            if top_track_idx >= len(camera_tracks[cam_id]):
                 continue  # Skip if the index is invalid
 
-            top_track = other_cam_tracks[top_track_idx]
+            top_track = camera_tracks[cam_id][top_track_idx]
             
-            # Append the top track to the trajectory
-            trajectory[i].append(top_track)
+            # Append the top track to the trajectory along with the similarity score
+            trajectory[i].append((top_track, sim_matrix[top_track_idx].item()))
 
     return trajectory
 
@@ -243,10 +241,10 @@ def target_search(target: dict, final_trajectories: list, all_frames_tracks: lis
 
     # ============= TARGET SEARCH =============
     target_path, target_cam = target["path"], target["camera"]
-    target = Image.open(target_path).convert("RGB")
+    target_image = Image.open(target_path).convert("RGB")
 
     # Get the features of the target image
-    frame = transforms.val_transform(target)             # Convert to torch.Tensor
+    frame = transforms.val_transform(target_image)             # Convert to torch.Tensor
     frame = frame.unsqueeze(0).float().to(device)
 
     target_feat = reid_model.forward(frame, training=False)
@@ -257,17 +255,207 @@ def target_search(target: dict, final_trajectories: list, all_frames_tracks: lis
     elif target_search_method == 'singletrack_search':
         similarities, top_k_tracks = singletrack_search(target_feat, all_frames_tracks, target_cam, K, device) # Run the Single-Track Search method
     elif target_search_method == 'cameralink_search':
-        similarities, top_k_tracks = cameralink_search(target_feat, all_frames_tracks, cams, K, device) # Run the CameraLink Search method
+        top_k_tracks = cameralink_search(target_feat, all_frames_tracks, cams, K, device) # Run the CameraLink Search method
     else:
         raise ValueError(f"Invalid target search method: {target_search_method}")
+
+    # Prepare image transforms
+    query_trans = T.Pad(4, 0)
+    good_trans = T.Pad(4, (0, 255, 0))          # Green
+    bad_trans = T.Pad(4, (255, 0, 0))           # Red
+    empty_trans = T.Pad(4, (255, 255, 0, 255))  # Yellow
+    min_bbox_area = 100
+
+    # Prepare target image
+    q_image = ImageOps.contain(target_image, (128, 128))
+
+    # Create transparent image for missing views
+    width, height = 128, 128
+    transparent_img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    transparent_img = empty_trans(transparent_img)
 
     # Print out which are the top-K most similar tracks
     print(f"Top-{K} most similar tracks:")
     if target_search_method == 'multitrack_search':
+
+        # Create a dictionary to store images for each trajectory and camera
+        # Structure: traj_images[trajectory_idx][camera_id] = image
+        traj_images = {}
+
+        # Process top-K tracks
         for i, trajectory in enumerate(top_k_tracks):
-            print(f"Trajectory {i+1} | ID: {trajectory.id} | Traj Length: {len(trajectory.tracks)} | Similarity: {similarities[K[i]]:.4f}")
-            for track in trajectory.tracks:
-                print(f"\t- VID: {track.vehicle_id} | Camera: {track.cam} | Start Time: {track.start_time} | End Time: {track.end_time}")
-    else:
+            
+            traj_images[i] = {}  # Initialize dictionary for this trajectory
+
+            tracks = trajectory.tracks
+            
+            print(f"Trajectory {i+1} | Traj Length: {len(tracks)} | Similarity: {similarities[i]:.4f}")
+            
+            for track in tracks:
+                print(f"\t- VID: {track.vehicle_id} | Camera: {track.cam} | Start Time: {track.start_time:.2f} | End Time: {track.end_time:.2f}")
+
+                # Find a suitable frame to display
+                found = False
+                for n, (k, v) in enumerate(track.frames.items()):
+                    try:  # Handle both DB and Pickle formats
+                        shape = v[4] if len(v) > 4 else v['shape']
+                    except:
+                        continue
+                    
+                    if shape[0] >= min_bbox_area or shape[1] >= min_bbox_area:
+                        idx = k
+                        found = True
+                        break
+                
+                if not found:
+                    idx = list(track.frames.keys())[len(track.frames) // 2]
+
+                # Extract and process gallery image
+                g_frame = track.frames[idx]
+
+                try:  # Pickle format
+                    comp_img = g_frame['compressed_image']
+                    shape = g_frame['shape']
+                except:  # DB format
+                    comp_img = g_frame[3]
+                    shape = g_frame[4]
+                
+                g_image = decompress_img(comp_img, shape, dtype=np.uint8)
+                g_image = Image.fromarray(g_image).convert("RGB")
+                g_image = ImageOps.contain(g_image, (128, 128))
+
+                # Store image indexed by camera ID
+                traj_images[i][track.get_cam_id()] = g_image
+
+        # Create figure - rows for trajectories, columns for cameras (+1 for query)
+        fig, axes = plt.subplots(len(top_k_tracks), cams.n_cams + 1, figsize=(3*(cams.n_cams + 1), 3*K))
+
+    elif target_search_method == 'singletrack_search':
+            
+        # Create a dictionary to store images for each trajectory and camera
+        # Structure: traj_images[trajectory_idx][camera_id] = image
+        traj_images = {}
+
+        # Process top-K tracks
         for i, track in enumerate(top_k_tracks):
-            print(f"\t- VID: {track.vehicle_id} Similarity: {similarities[K[i]]:.4f} | Camera: {track.cam} | Start Time: {track.start_time} | End Time: {track.end_time}")
+
+            traj_images[i] = {}  # Initialize dictionary for this trajectory
+
+            print(f"VID: {track.vehicle_id} | Camera: {track.cam} | Start Time: {track.start_time:.2f} | End Time: {track.end_time:.2f}")
+
+            # Find a suitable frame to display
+            found = False
+            for n, (k, v) in enumerate(track.frames.items()):
+                try:  # Handle both DB and Pickle formats
+                    shape = v[4] if len(v) > 4 else v['shape']
+                except:
+                    continue
+                
+                if shape[0] >= min_bbox_area or shape[1] >= min_bbox_area:
+                    idx = k
+                    found = True
+                    break
+            
+            if not found:
+                idx = list(track.frames.keys())[len(track.frames) // 2]
+
+            # Extract and process gallery image
+            g_frame = track.frames[idx]
+
+            try:  # Pickle format
+                comp_img = g_frame['compressed_image']
+                shape = g_frame['shape']
+            except:  # DB format
+                comp_img = g_frame[3]
+                shape = g_frame[4]
+
+            g_image = decompress_img(comp_img, shape, dtype=np.uint8)
+            g_image = Image.fromarray(g_image).convert("RGB")
+            g_image = ImageOps.contain(g_image, (128, 128))
+
+            # Store image indexed by camera ID
+            traj_images[i][track.get_cam_id()] = g_image
+
+        # Create figure - rows for trajectories, columns for cameras (+1 for query)
+        fig, axes = plt.subplots(len(top_k_tracks), cams.n_cams + 1, figsize=(3*(cams.n_cams + 1), 3*K))
+
+    else: # cameralink_search
+
+        # Create a dictionary to store images for each trajectory and camera
+        # Structure: traj_images[trajectory_idx][camera_id] = image
+        traj_images = {}
+
+        # Process top-K tracks
+        for i, (k, v) in enumerate(top_k_tracks.items()):
+            tracks, mean_sim = [track for track, _ in v], [sim for _, sim in v]
+            traj_images[i] = {}  # Initialize dictionary for this trajectory
+            
+            print(f"Trajectory {i+1} | Traj Length: {len(tracks)} | Mean Similarity: {np.mean(mean_sim):.4f}")
+            
+            for track in tracks:
+                print(f"\t- VID: {track.vehicle_id} | Camera: {track.cam} | Start Time: {track.start_time:.2f} | End Time: {track.end_time:.2f}")
+
+                # Find a suitable frame to display
+                found = False
+                for n, (k, v) in enumerate(track.frames.items()):
+                    try:  # Handle both DB and Pickle formats
+                        shape = v[4] if len(v) > 4 else v['shape']
+                    except:
+                        continue
+                    
+                    if shape[0] >= min_bbox_area or shape[1] >= min_bbox_area:
+                        idx = k
+                        found = True
+                        break
+                
+                if not found:
+                    idx = list(track.frames.keys())[len(track.frames) // 2]
+
+                # Extract and process gallery image
+                g_frame = track.frames[idx]
+
+                try:  # Pickle format
+                    comp_img = g_frame['compressed_image']
+                    shape = g_frame['shape']
+                except:  # DB format
+                    comp_img = g_frame[3]
+                    shape = g_frame[4]
+                
+                g_image = decompress_img(comp_img, shape, dtype=np.uint8)
+                g_image = Image.fromarray(g_image).convert("RGB")
+                g_image = ImageOps.contain(g_image, (128, 128))
+
+                # Store image indexed by camera ID
+                traj_images[i][track.get_cam_id()] = g_image
+
+        # Create figure - rows for trajectories, columns for cameras (+1 for query)
+        fig, axes = plt.subplots(len(top_k_tracks), cams.n_cams + 1, figsize=(3*(cams.n_cams + 1), 3*K))
+
+    # Set column titles
+    axes[0, 0].set_title("Query")
+    for j in range(1, cams.n_cams + 1):
+        axes[0, j].set_title(f"CAM{j-1}")
+
+    # Turn off all axes
+    for ax in axes.flat:
+        ax.axis("off")
+
+    # Display query image in first column for each trajectory
+    query_img = query_trans(q_image)
+    for i in range(len(top_k_tracks)):
+        axes[i, 0].imshow(query_img)
+
+    # Display trajectory images
+    for traj_idx in range(len(top_k_tracks)):
+        for cam_id in range(cams.n_cams):
+            if cam_id in traj_images[traj_idx]:
+                # Display track image with green border
+                img = good_trans(traj_images[traj_idx][cam_id])
+                axes[traj_idx, cam_id + 1].imshow(img)
+            else:
+                # Display transparent image for missing camera views
+                axes[traj_idx, cam_id + 1].imshow(transparent_img)
+
+    plt.tight_layout()
+    plt.show()
+    plt.pause(0.1)

@@ -1,5 +1,6 @@
 from PIL import Image
 from tqdm import tqdm
+
 from misc.utils import is_incomplete
 from reid.models.color_model import EfficientNet
 

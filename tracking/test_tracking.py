@@ -11,9 +11,9 @@ import imageio.v3 as iio
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
-from tqdm import tqdm
 from model import load_yolo
 from PIL import Image, ImageDraw, ImageFont
+from tqdm import tqdm
 
 # Add the parent directory of 'tracking' to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -22,7 +22,7 @@ from misc.printer import Logger
 from misc.utils import create_mask
 from reid.datasets.transforms import Transformations
 from reid.model import ModelBuilder
-from reid.models.color_model import EfficientNet, SVM
+from reid.models.color_model import SVM, EfficientNet
 
 # Function to draw bounding boxes and tracks
 def draw_box_and_tracks(frame, boxes, ids, classes, confidences, track_history):
@@ -346,20 +346,21 @@ with tqdm(total=total_n_frames, desc="Processing Video", unit="frame") as pbar:
                 center_x = x0 + ((x1 - x0) / 2)
                 center_y = y0 + ((y1 - y0) / 2)
 
-                # x = Image.fromarray(orig_frame[y0:y1, x0:x1])                                   # Convert to PIL Image
-                # #x.save(f"./tracking/{frame_number}_{track_id}.jpg")
-                # tensor_x = transforms.val_transform(x)                                          # Convert to torch.Tensor
-                # tensor_x = tensor_x.unsqueeze(0).float().to(device)                             # Convert to Tensor and send to device
+                x = Image.fromarray(orig_frame[y0:y1, x0:x1])                                   # Convert to PIL Image
+                #x.save(f"./tracking/{frame_number}_{track_id}.jpg")
+                tensor_x = transforms.val_transform(x)                                          # Convert to torch.Tensor
+                tensor_x = tensor_x.unsqueeze(0).float().to(device)                             # Convert to Tensor and send to device
 
-                # # EfficientNet
-                # if isinstance(color_model, EfficientNet):
-                #     prediction = color_model.predict(tensor_x)
-                #     color_prediction = [entry['color'] for entry in prediction]
-                # # ResNet + SVM
-                # elif isinstance(color_model, SVM):
-                #     svm_embedding = model(tensor_x).detach().cpu().numpy()
-                #     color_prediction = color_model.predict(svm_embedding)
-                color_prediction = "Unknown"
+                # EfficientNet
+                if isinstance(color_model, EfficientNet):
+                    prediction = color_model.predict(tensor_x)
+                    color_prediction = [entry['color'] for entry in prediction]
+                # ResNet + SVM
+                elif isinstance(color_model, SVM):
+                    svm_embedding = model(tensor_x).detach().cpu().numpy()
+                    color_prediction = color_model.predict(svm_embedding)
+                else:
+                    color_prediction = "Unknown"
 
                 # Append the center of the bounding box and the color prediction to the track history
                 track.append(((center_x, center_y), color_prediction))

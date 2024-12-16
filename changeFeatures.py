@@ -1,12 +1,13 @@
 
 import numpy as np
 import torch
+from PIL import Image
 from tqdm import tqdm
-from pipeline import load_config_and_device, setup_database
+
 from misc.utils import decompress_img
+from pipeline import load_config_and_device, setup_database
 from reid.datasets.transforms import Transformations
 from reid.model import ModelBuilder
-from PIL import Image
 
 cfg, device = load_config_and_device()
 

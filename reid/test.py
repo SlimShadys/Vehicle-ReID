@@ -1,10 +1,5 @@
 import argparse
 import os
-import sys
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-import os
 import random
 import sys
 
@@ -14,6 +9,8 @@ import seaborn as sns
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import _C as cfg_file
 from misc.utils import euclidean_dist, read_image
@@ -198,12 +195,15 @@ def main(config, seed):
 
     # ============= VARIABLES =============
     misc_configs = config.MISC
-    dataset_configs = config.REID.DATASET
-    model_configs = config.REID.MODEL
-    color_configs = config.REID.COLOR_MODEL
-    augmentation_configs = config.REID.AUGMENTATION
-    val_configs = config.REID.VALIDATION
-    test_configs = config.REID.TEST
+    reid_configs = config.REID
+    
+    # Re-ID variables
+    dataset_configs = reid_configs.DATASET
+    model_configs = reid_configs.MODEL
+    color_configs = reid_configs.COLOR_MODEL
+    augmentation_configs = reid_configs.AUGMENTATION
+    val_configs = reid_configs.VALIDATION
+    test_configs = reid_configs.TEST
 
     # Misc variables
     device = misc_configs.DEVICE
@@ -216,6 +216,7 @@ def main(config, seed):
     # Model parameters
     model_name = model_configs.NAME
     pretrained = model_configs.PRETRAINED
+    model_configs.PADDING_MODE = augmentation_configs.PADDING_MODE
 
     # Validation parameters
     batch_size_val = val_configs.BATCH_SIZE
@@ -231,11 +232,11 @@ def main(config, seed):
     img_path_2 = test_configs.PATH_IMG_2
     # =====================================
 
-    dataset_name = 'veri_776'
     # Number of classes in each dataset (Only for ID classification tasks, hence only training set is considered)
     num_classes = {
         'ai_city': 440,
-        'ai_city_sim': 1802,
+        'ai_city_mix': 1802,
+        'ai_city_sim': 1362,
         'vehicle_id': 13164,
         'veri_776': 576,
         'veri_wild': 30671,
@@ -331,7 +332,7 @@ def main(config, seed):
                         'dataset': dataset_builder.dataset, 'transform': dataset_builder.transforms},
             loss_fn=None,
             device=device,
-            configs=(misc_configs, None, None, None, val_configs, test_configs)
+            configs=(misc_configs, reid_configs)
         )
         if run_reid_metrics: metrics.append('reid')
         if run_color_metrics: metrics.append('color')

@@ -50,13 +50,20 @@ class Trainer:
         self.transforms = dataloaders['transform']
         self.val_interval = val_interval
         self.loss_fn = loss_fn
-        self.misc_configs, self.augmentation_configs, self.loss_configs, self.train_configs, self.val_configs, self.test_configs = configs
+        self.misc_configs, self.reid_configs = configs
+            
+        # Load the configurations from ReID Configurations
+        self.augmentation_configs = self.reid_configs.AUGMENTATION
+        self.loss_configs = self.reid_configs.LOSS
+        self.train_configs = self.reid_configs.TRAIN
+        self.val_configs = self.reid_configs.VAL
+        self.test_configs = self.reid_configs.TEST
+        self.output_dir = self.reid_configs.OUTPUT_DIR
 
-        # Test configurations (Whether we are testing or not)
+        # Test configurations (whether we are testing or not)
         self.testing = self.test_configs.TESTING
 
         # Misc configurations
-        self.output_dir = self.misc_configs.OUTPUT_DIR
         self.use_amp = self.misc_configs.USE_AMP
 
         if (self.testing == False):
