@@ -97,8 +97,6 @@ def is_incomplete(box, min_box_size, frame_width, frame_height, margin=50, cente
     # Check if the bounding box extends beyond the frame boundaries
     if (tx < margin or ty < margin or tx + w > (frame_width - margin) or ty + h > (frame_height - margin)):
         return True
-    # if (x1 < margin or y1 < margin or x2 > (frame_width - margin) or y2 > (frame_height - margin)):
-    #     return True
     
     # Check if the bounding box is near the center
     if not (box_center_x > center_x_min and box_center_x < center_x_max and box_center_y > center_y_min and box_center_y < center_y_max):

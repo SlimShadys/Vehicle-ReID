@@ -5,7 +5,7 @@ from tqdm import tqdm
 from db.database import Database
 from misc.utils import cosine_similarity_np, normalize_np
 
-def get_max_similarity_per_vehicle(reid_DB: Database, reid_cfg, camera, device, similarity_algorithm, similarity_method):
+def get_max_similarity_per_vehicle(reid_DB: Database, reid_cfg, camera, device, unification_method):
     # After the pipeline is done, we must refine the BBoxes as to:
     # - Unify the BBoxes of the same vehicle that have been categorized as different vehicles
     #   -> We can think of using the ReID model to check if the BBoxes are from the same vehicle
@@ -19,7 +19,7 @@ def get_max_similarity_per_vehicle(reid_DB: Database, reid_cfg, camera, device, 
     # Initialize dictionary to store the max similarity for each vehicle
     max_similarity_per_vehicle = []
 
-    if similarity_method == 'mean':
+    if unification_method == 'mean':
         # Construct a similarity matrix for the vehicles from the same camera
         # We will compare the features of the vehicles from the same camera
         # If the features are similar, we will consider them as the same vehicle
@@ -67,7 +67,7 @@ def get_max_similarity_per_vehicle(reid_DB: Database, reid_cfg, camera, device, 
                 # Vehicle_ID, Vehicle_ID_MaxSim, Similarity
                 max_similarity_per_vehicle.append((i_idx, best_j_idx, max_similarity_matmul))
 
-    elif similarity_method == 'individual':
+    elif unification_method == 'individual':
         # Vehicle IDs list
         vehicle_ids = list(camera_vehicles.keys())
 
@@ -96,12 +96,7 @@ def get_max_similarity_per_vehicle(reid_DB: Database, reid_cfg, camera, device, 
                         emb_i = np.array(camera_vehicles[vehicle_i][frame_i][0])  # [2048]
                         emb_j = np.array(camera_vehicles[vehicle_j][frame_j][0])  # [2048]
 
-                        # Compute similarity using NumPy
-                        if similarity_algorithm == 'cosine':
-                            similarity = cosine_similarity_np(emb_i, emb_j)
-                        elif similarity_algorithm == 'euclidean':
-                            similarity = np.linalg.norm(emb_i - emb_j)
-
+                        similarity = cosine_similarity_np(emb_i, emb_j)
                         similarities.append(similarity)
 
                 # Compute the average similarity between the two vehicles
@@ -117,7 +112,7 @@ def get_max_similarity_per_vehicle(reid_DB: Database, reid_cfg, camera, device, 
                 # Vehicle_ID, Vehicle_ID_MaxSim, Similarity
                 max_similarity_per_vehicle.append((vehicle_i, max_vehicle_pair, max_similarity))
 
-    elif similarity_method == 'area_avg':
+    elif unification_method == 'area_avg':
         mean_embeddings_dict_np = {}
 
         # Extract embeddings and compute mean per vehicle
@@ -174,6 +169,6 @@ def get_max_similarity_per_vehicle(reid_DB: Database, reid_cfg, camera, device, 
                 # Vehicle_ID, Vehicle_ID_MaxSim, Similarity
                 max_similarity_per_vehicle.append((i_idx, best_j_idx, (max_similarity_matmul)))
     else:
-        raise ValueError(f"Invalid similarity method: {similarity_method}")
+        raise ValueError(f"Invalid similarity method: {unification_method}")
     
     return max_similarity_per_vehicle

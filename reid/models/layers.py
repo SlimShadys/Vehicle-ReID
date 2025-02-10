@@ -6,31 +6,31 @@ from torch.nn.parameter import Parameter
 class GeM(nn.Module):
     '''
     Generalized Mean Pooling (GeM)
+    Formula: GeM = ((1/n) * sum(x^p))^(1/p)
     Taken from:
         => https://github.com/amaarora/amaarora.github.io/blob/master/nbs/GeM%20Pooling.ipynb
     '''
     def __init__(self, p=3.0, eps=1e-6):
         super(GeM, self).__init__()
-        self.p = Parameter(torch.ones(1) * p)
+        self.p = float(p)
         self.eps = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.adaptive_avg_pool2d(
-                x.clamp(min=self.eps).pow(self.p), # Input
-                                            (1, 1) # Output size
-                ).pow(1./self.p)
+        x = x.clamp(min=self.eps).pow(self.p)            # Input elevated to the power of p (x^p)
+        avg = F.adaptive_avg_pool2d(x, 1)                # Average pooling
+        return avg.pow(1. / self.p)                      # Output is elevated to the power of 1/p
 
 class IBN(nn.Module):
     '''
     IBN (Instance-Batch Normalization) Layer
     '''
-    def __init__(self, planes):
+    def __init__(self, planes, use_group_norm=False):
         super(IBN, self).__init__()
         half1 = int(planes / 2)
         self.half = half1
         half2 = planes - half1
         self.IN = nn.InstanceNorm2d(half1, affine=True)
-        self.BN = nn.BatchNorm2d(half2)
+        self.BN = nn.GroupNorm(num_groups=16, num_channels=half2) if use_group_norm else nn.BatchNorm2d(half2)
 
     def forward(self, x):
         split = torch.split(x, self.half, 1)
@@ -45,19 +45,21 @@ class Bottleneck_IBN(nn.Module):
     '''
     expansion = 4
 
-    def __init__(self, inplanes, planes, ibn=False, stride=1, downsample=None):
+    def __init__(self, inplanes, planes, ibn=False, stride=1, downsample=None, use_group_norm=False):
         super(Bottleneck_IBN, self).__init__()
+        self.use_group_norm = use_group_norm
+        
         self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
         
         if ibn:
-            self.bn1 = IBN(planes)
+            self.bn1 = IBN(planes, self.use_group_norm)
         else:
-            self.bn1 = nn.BatchNorm2d(planes)
+            self.bn1 = nn.GroupNorm(num_groups=16, num_channels=planes) if self.use_group_norm else nn.BatchNorm2d(planes)
             
         self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes)
+        self.bn2 = nn.GroupNorm(num_groups=16, num_channels=planes) if self.use_group_norm else nn.BatchNorm2d(planes)
         self.conv3 = nn.Conv2d(planes, planes * self.expansion, kernel_size=1, bias=False)
-        self.bn3 = nn.BatchNorm2d(planes * self.expansion)
+        self.bn3 = nn.GroupNorm(num_groups=16, num_channels=planes * self.expansion) if self.use_group_norm else nn.BatchNorm2d(planes * self.expansion)
         
         self.relu = nn.ReLU(inplace=True)
         self.downsample = downsample

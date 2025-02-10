@@ -57,7 +57,6 @@ def main(config, seed):
     loss_configs = reid_configs.LOSS
     training_configs = reid_configs.TRAINING
     val_configs = reid_configs.VALIDATION
-    test_configs = reid_configs.TEST
     output_dir = reid_configs.OUTPUT_DIR
 
     # Misc variables
@@ -86,6 +85,7 @@ def main(config, seed):
     label_smoothing = loss_configs.LABEL_SMOOTHING
     apply_MALW = loss_configs.APPLY_MALW
     use_rptm, _ = loss_configs.USE_RPTM
+    use_glamor_training = model_configs.USE_GLAMOR_TRAINING
 
     # Training parameters
     batch_size = training_configs.BATCH_SIZE
@@ -218,7 +218,8 @@ def main(config, seed):
     # Define the loss function
     loss_fn = LossBuilder(loss_type=loss_type, alpha=alpha, k=k, margin=margin,
                           label_smoothing=label_smoothing, apply_MALW=apply_MALW,
-                          batch_size=batch_size, use_amp=use_amp)
+                          batch_size=batch_size, use_amp=use_amp,
+                          use_glamor_training=use_glamor_training, device=device)
 
     # Create the output directory and save the config file
     print("Creating the output directory...")

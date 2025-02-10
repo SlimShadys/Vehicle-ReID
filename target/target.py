@@ -14,7 +14,8 @@ from tracking.cameras import CameraLayout
 
 num_classes = {
     'ai_city': 440,
-    'ai_city_sim': 1802,
+    'ai_city_mix': 1802,
+    'ai_city_sim': 1362,
     'vehicle_id': 13164,
     'veri_776': 576,
     'veri_wild': 30671,
@@ -207,7 +208,7 @@ def target_search(target: dict, final_trajectories: list, all_frames_tracks: lis
     gpu_id = cfg.MISC.GPU_ID
     dataset_name = cfg.REID.DATASET.DATASET_NAME
     target_search_method = cfg.MTMC.TARGET_SEARCH_METHOD
-    K = 5
+    K = 3
 
     # CUDA device
     if device == 'cuda' and torch.cuda.is_available():

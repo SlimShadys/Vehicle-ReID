@@ -1,0 +1,18 @@
+MTMC:
+  camera_0:
+    path: './data/Synthehicle/Town02-O-day/C01/out_rgb/video.mp4'
+    roi: './data/Synthehicle/Town02-O-day/C01/roi.png'
+    info: './data/Synthehicle/Town02-O-day/C01/C01.json'
+    gt: './data/Synthehicle/Town02-O-day/C01/gt/gt.txt'
+  camera_1:
+    path: './data/Synthehicle/Town02-O-day/C02/out_rgb/video.mp4'
+    roi: './data/Synthehicle/Town02-O-day/C02/roi.png'
+    info: './data/Synthehicle/Town02-O-day/C02/C02.json'
+    gt: './data/Synthehicle/Town02-O-day/C02/gt/gt.txt'
+  camera_2:
+    path: './data/Synthehicle/Town02-O-day/C03/out_rgb/video.mp4'
+    roi: './data/Synthehicle/Town02-O-day/C03/roi.png'
+    info: './data/Synthehicle/Town02-O-day/C03/C03.json'
+    gt: './data/Synthehicle/Town02-O-day/C03/gt/gt.txt'
+layout:
+  path: './configs/layouts/Town02-O-day-camera_layout.txt'

@@ -258,7 +258,7 @@ def main(config, seed):
     model = model_builder.move_to(device)
 
     # Load parameters from a .pth file
-    if (model_val_path is not None):
+    if (model_val_path is not None or model_val_path != '') and os.path.exists(model_val_path):
         print("Loading model parameters from file...")
         if ('ibn' in model_name):
             model.load_param(model_val_path)

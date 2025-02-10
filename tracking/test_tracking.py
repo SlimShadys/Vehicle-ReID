@@ -23,6 +23,7 @@ from misc.utils import create_mask
 from reid.datasets.transforms import Transformations
 from reid.model import ModelBuilder
 from reid.models.color_model import SVM, EfficientNet
+from pipeline import load_models_and_transformations
 
 # Function to draw bounding boxes and tracks
 def draw_box_and_tracks(frame, boxes, ids, classes, confidences, track_history):
@@ -89,9 +90,13 @@ torch.cuda.empty_cache()
 
 # Number of classes in each dataset (Only for ID classification tasks, hence only training set is considered)
 num_classes = {
+    'ai_city': 440,
+    'ai_city_mix': 1802,
+    'ai_city_sim': 1362,
+    'vehicle_id': 13164,
     'veri_776': 576,
     'veri_wild': 30671,
-    'vehicle_id': 13164,
+    'vric': 2811,
     'vru': 7086,
 }
 
@@ -123,14 +128,9 @@ logger = Logger()
 # ========================== MISC CONFIGS ========================== #
 SAVE_VIDEO = tracking_cfg.SAVE_VIDEO
 DISP_INFOS = tracking_cfg.DISP_INFOS
+input_path = tracking_cfg.VIDEO_PATH
 output_path = tracking_cfg.OUTPUT_PATH
 extension = tracking_cfg.VIDEO_PATH.split('.')[-1]
-use_roi_mask = tracking_cfg.USE_ROI_MASK
-roi_mask_path = tracking_cfg.ROI_MASK_PATH
-
-# ========================== LOAD YOLO MODEL ========================== #
-yolo_model = load_yolo(cfg_file)
-
 # =========================== YOLO =========================== #
 tracked_classes     = yolo_cfg.TRACKED_CLASS
 conf_thresh         = yolo_cfg.CONFIDENCE_THRESHOLD
@@ -143,10 +143,12 @@ tracker_model       = tracker_cfg.MODEL.NAME
 tracker_yaml_file   = tracker_cfg.YOLO_TRACKER
 persist             = tracker_cfg.PERSIST
 # =========================== Misc ============================ #
-input_path          = tracking_cfg.VIDEO_PATH
 use_roi_mask        = tracking_cfg.USE_ROI_MASK
 roi_mask_path       = tracking_cfg.ROI_MASK_PATH
 # ============================================================ #
+
+# Load the models and transformations
+yolo_model, model, color_model, transforms = load_models_and_transformations(device, cfg_file)
 
 # ========================== LOAD COLOR MODEL ========================== #
 model_configs = reid_cfg.MODEL
@@ -155,49 +157,6 @@ pretrained = reid_cfg.MODEL.PRETRAINED
 dataset_name = reid_cfg.DATASET.DATASET_NAME
 color_model_configs = reid_cfg.COLOR_MODEL
 model_val_path = reid_cfg.TEST.MODEL_VAL_PATH
-
-# If the color model is SVM, we need to Re-ID features from the ReID model first
-if color_model_configs.NAME == 'svm':
-    logger.info(f"Building {reid_cfg.MODEL.NAME} model...")
-    model_builder = ModelBuilder(
-        model_name=model_name,
-        pretrained=pretrained,
-        num_classes=num_classes[dataset_name],
-        model_configs=model_configs,
-        device=device
-    )
-
-    # Get the model and move it to the device
-    model = model_builder.move_to(device)
-
-    # Load parameters from a .pth file
-    if (model_val_path != ""):
-        logger.info("Loading model parameters from file...")
-        if ('ibn' in model_name):
-            model.load_param(model_val_path)
-        else:
-            checkpoint = torch.load(model_val_path, map_location=device)
-            model.load_state_dict(checkpoint['model'])
-        logger.info(f"Successfully loaded model parameters from file: {model_val_path}")
-
-    model.eval()
-    print(model)
-
-# Build the color model
-logger.info(f"Loading color model from {color_model_configs.NAME}...")
-model_builder = ModelBuilder(
-    model_name=color_model_configs.NAME,
-    pretrained=pretrained,
-    num_classes=num_classes[dataset_name],
-    model_configs=color_model_configs,
-    device=device
-)
-color_model = model_builder.move_to(device)
-logger.info(f"Successfully loaded color model from {color_model_configs.NAME}!")
-
-# Transformations needed for the ReID model
-transforms = Transformations(dataset=None, configs=reid_cfg.AUGMENTATION)
-# ====================================================================== #
 
 # Check if the path exists
 is_frames = False

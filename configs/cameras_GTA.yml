@@ -1,9 +1,9 @@
 MTMC:
-  # camera_0:
-  #   path: './data/video/MC-GTA/cam-0/'
-  #   roi: ''
-  #   info: './data/video/info/MC-GTA_cam-0.json'
-  #   gt: './data/video/MC-GTA/cam-0/coords_cam_mod_updated.txt'
+  camera_0:
+    path: './data/video/MC-GTA/cam-0/'
+    roi: ''
+    info: './data/video/info/MC-GTA_cam-0.json'
+    gt: './data/video/MC-GTA/cam-0/coords_cam_mod_updated.txt'
 
   camera_1:
     path: './data/video/MC-GTA/cam-1/'
@@ -23,11 +23,11 @@ MTMC:
     info: './data/video/info/MC-GTA_cam-3.json'
     gt: './data/video/MC-GTA/cam-3/coords_cam_mod_updated.txt'
 
-  # camera_4:
-  #   path: './data/video/MC-GTA/cam-4/'
-  #   roi: './data/video/roi_masks/video_MC-GTA_cam-4_roi_mask.png'
-  #   info: './data/video/info/MC-GTA_cam-4.json'
-  #   gt: './data/video/MC-GTA/cam-4/coords_cam_mod_updated.txt'
+  camera_4:
+    path: './data/video/MC-GTA/cam-4/'
+    roi: './data/video/roi_masks/video_MC-GTA_cam-4_roi_mask.png'
+    info: './data/video/info/MC-GTA_cam-4.json'
+    gt: './data/video/MC-GTA/cam-4/coords_cam_mod_updated.txt'
 
   camera_5:
     path: './data/video/MC-GTA/cam-5/'

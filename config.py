@@ -1,5 +1,5 @@
 # NOTE n.1 : If SAMPLER_TYPE "random" or "balanced" is selected, BATCH_SIZE must be divisible by NUM_INSTANCES.
-# NOTE n.2 : If SAMPLER_TYPE "random" or "balanced" is selected, LOSS_TYPE must be "TripletLoss".
+# NOTE n.2 : If SAMPLER_TYPE "random" or "balanced" is selected, LOSS_TYPE must be "TripletLoss" / "MultiPosConLoss".
 # NOTE n.3 : If USE_RPTM is True, LOSS_TYPE must be "TripletLossRPTM".
 # NOTE n.4 : If PADDING_MODE is:
 #               - "aspect_ratio" : Make sure to NOT set the RandomCrop() transformation, as we do process
@@ -54,23 +54,26 @@ _C.MISC.USE_AMP = False
 # ============================================================================================= #
 
 # Output ReID Directory
-_C.REID.OUTPUT_DIR = './reid/results/Test-31'
+_C.REID.OUTPUT_DIR = './reid/results/Test-29'
 
 # ========> DATASET CONFIGS <========
 _C.REID.DATASET.DATA_PATH       = "./data"
 _C.REID.DATASET.DATASET_NAME    = 'ai_city' # ai_city / ai_city_mix / ai_city_sim / vehicle_id / veri_776 / veri_wild / vric / vru
-_C.REID.DATASET.SPLITTINGS      = [('vric', 0.2481), ('ai_city', 0.3528), ('ai_city_sim', 0.026)] # Only to be adjusted if dataset_name is a list (CombinedDataset)
+_C.REID.DATASET.SPLITTINGS      = [('vric', 0.2481), ('ai_city', 0.3528), ('ai_city_sim', 0.026)] # Only to be adjusted if dataset_name is a list (which would activate the CombinedDataset)
 _C.REID.DATASET.DATASET_SIZE    = "small" # small / medium / large
 _C.REID.DATASET.SAMPLER_TYPE    = "random" # random / balanced / None
-_C.REID.DATASET.NUM_INSTANCES   = 6 # Only to be adjusted if sampler_type is either "random" or "balanced". Look at the NOTE n.1
+_C.REID.DATASET.NUM_INSTANCES   = 4 # Only to be adjusted if sampler_type is either "random" or "balanced". Look at the NOTE n.1
 
 # ========> MODEL CONFIGS <========
 _C.REID.MODEL.NAME                  = 'resnet50_ibn_a' # "resnet50" / "resnet101" / "resnet50_ibn_a" / "resnet101_ibn_a"
-_C.REID.MODEL.PRETRAINED            = True
+_C.REID.MODEL.PRETRAINED            = True   # If True, the pre-trained weights on ImageNet are loaded into the model
 _C.REID.MODEL.RUN_FINETUNING        = False  # If True, the weights from _C.REID.TEST.MODEL_VAL_PATH are loaded and the model is fine-tuned
-_C.REID.MODEL.USE_GEM               = False
-_C.REID.MODEL.USE_STRIDE            = True
-_C.REID.MODEL.USE_BOTTLENECK        = True
+_C.REID.MODEL.USE_GEM               = False  # If True, the GeM pooling layer is used instead of the average pooling layer
+_C.REID.MODEL.USE_STRIDE            = True   # If True, the stride of the last convolutional layer is set to 1
+_C.REID.MODEL.USE_BOTTLENECK        = True   # If True, the model uses a bottleneck layer before the final FC layer
+_C.REID.MODEL.USE_GROUP_NORM        = False  # If True, the model uses GroupNorm instead of BatchNorm
+_C.REID.MODEL.USE_GLAMOR_TRAINING   = False  # If True, the model uses GLAMOR training
+
 # -- Color Model Configuration
 _C.REID.COLOR_MODEL.NAME            = 'efficientnet-b5' # "svm" / "efficientnet-b3" / "efficientnet-b5" (our implementation)
 #_C.REID.COLOR_MODEL.PRETRAINED_PATH = "./tracking/car-color-classifier/Models/svm_classifier_v3.pkl"                       # SVM Pre-trained Model
@@ -87,26 +90,26 @@ _C.REID.AUGMENTATION.JITTER_SATURATION              = 0.0
 _C.REID.AUGMENTATION.JITTER_HUE                     = 0.0
 _C.REID.AUGMENTATION.COLOR_AUGMENTATION             = True
 _C.REID.AUGMENTATION.PADDING                        = 10 # 0 for deactivating padding
+_C.REID.AUGMENTATION.RANDOM_ERASING_PROB            = 0.5
 _C.REID.AUGMENTATION.NORMALIZE_MEAN                 = None # [0.485, 0.456, 0.406]
 _C.REID.AUGMENTATION.NORMALIZE_STD                  = None # [0.229, 0.224, 0.225]
-_C.REID.AUGMENTATION.RANDOM_ERASING_PROB            = 0.5
 
 # ========> LOSS CONFIGS <========
-_C.REID.LOSS.TYPE               = 'TripletLoss' # "TripletLoss" / "TripletLossRPTM" / "SupConLoss" / "SupConLoss_Pytorch" / "TripletMarginLoss_Pytorch"
+_C.REID.LOSS.TYPE               = 'TripletLoss' # "TripletLoss" / "TripletLossRPTM" / "SupConLoss" / "SupConLoss_Pytorch" / "TripletMarginLoss_Pytorch" / "MultiPosConLoss"
 # -- RPTM Configuration
 _C.REID.LOSS.USE_RPTM           = [False, "mean"] # [True/False, "mean"/"max"/"min"]
 # -- TripetLoss Configuration
-_C.REID.LOSS.MARGIN             = 1.00 
+_C.REID.LOSS.MARGIN             = 0.30  
 # -- Label Smoothing Configuration
-_C.REID.LOSS.LABEL_SMOOTHING    = 0.00
+_C.REID.LOSS.LABEL_SMOOTHING    = 0.00 # 0.00 / 0.20 / 0.00173 (1/N) for VeRi-776
 # -- MALW Configuration
 _C.REID.LOSS.APPLY_MALW         = False
 _C.REID.LOSS.ALPHA              = 0.9
-_C.REID.LOSS.K                  = 2000
+_C.REID.LOSS.K                  = 500
 
 # ========> TRAINING CONFIGS <========
 _C.REID.TRAINING.EPOCHS = 160
-_C.REID.TRAINING.BATCH_SIZE = 12
+_C.REID.TRAINING.BATCH_SIZE = 8
 _C.REID.TRAINING.NUM_WORKERS = 0
 # -- Optimizer Configuration
 _C.REID.TRAINING.OPTIMIZER = "adam" # adam / sgd
@@ -125,7 +128,7 @@ _C.REID.TRAINING.MIN_LR = 1.0e-6
 # -- Logging Configuration
 _C.REID.TRAINING.LOG_INTERVAL = 100
 # -- Loading Checkpoint
-_C.REID.TRAINING.LOAD_CHECKPOINT = False # Could be also a path to a checkpoint
+_C.REID.TRAINING.LOAD_CHECKPOINT = False # Could be also a path to a checkpoint like "./reid/results/Test-29/model_ep-145_loss-0.0627.pth"
 
 # ========> VALIDATION CONFIGS <========
 _C.REID.VALIDATION.BATCH_SIZE = 16
@@ -139,10 +142,11 @@ _C.REID.TEST.RUN_REID_METRICS = False
 _C.REID.TEST.RUN_COLOR_METRICS = False
 _C.REID.TEST.PRINT_CONFUSION_MATRIX = True # Only available if run_color_metrics is True
 _C.REID.TEST.NORMALIZE_EMBEDDINGS = True
-_C.REID.TEST.MODEL_VAL_PATH = "./reid/results/Test-31/model_ep-156_loss-0.0578.pth"
+_C.REID.TEST.MODEL_VAL_PATH = "./reid/results/Test-29/model_ep-145_loss-0.0627.pth"
 _C.REID.TEST.PATH_IMG_1 = "data/test/honda_f.jpg"
 _C.REID.TEST.PATH_IMG_2 = "data/test/honda_f_2.jpg"
 _C.REID.TEST.STACK_IMAGES = True # Stack all the images to create a NxN matrix of similarity scores. Only available if run_reid_metrics is False
+_C.REID.TEST.SIMILARITY_ALGORITHM = "cosine" # "euclidean" / "cosine"
 
 # ============================================================================================= #
 #                                    TRACKING CONFIGURATIONS                                    #
@@ -172,7 +176,7 @@ _C.TRACKING.MIN_BOX_SIZE = 60
 # Output Tracking Configs
 _C.TRACKING.BOUNDING_BOXES_OUTPUT_PATH = './tracking/bounding_boxes/'   # Necessary just to Debugging purposes
 _C.TRACKING.OUTPUT_PATH = './tracking/output/'                          # Necessary just to Debugging purposes
-_C.TRACKING.SAVE_VIDEO = False                                          # Saves Tracking Video in the folder specified above (Debugging purposes)
+_C.TRACKING.SAVE_VIDEO = True                                          # Saves Tracking Video in the folder specified above (Debugging purposes)
 _C.TRACKING.SAVE_BOUNDING_BOXES = False                                  # Saves BBoxes in a folder (Debugging purposes)
 _C.TRACKING.DISP_INFOS = True                                           # Display information on top-left corner of the video
 
@@ -199,10 +203,10 @@ _C.DB.VERBOSE = False
 # Normally, if you run the pipeline with _C.MISC.EVALUATE_METRICS = True, it will
 # automatically populate this list with the MTMC files generated by the pipeline itself.
 _C.METRICS.PREDICTIONS = [
-        # "MTMC-predictions_camera-0_2024-12-13_14-41-05.txt", # cam006
-        # "MTMC-predictions_camera-1_2024-12-13_14-41-06.txt", # cam007
-        "MTSC-predictions_camera-2_2024-12-16_10-11-17.txt", # cam008
-        # "MTMC-predictions_camera-3_2024-12-13_14-41-07.txt", # cam009
+        # "Test-31-MTSC-predictions_camera-0_2024-12-17_18-08-02.txt", # cam006
+        # "Test-31-MTSC-predictions_camera-1_2024-12-17_18-15-40.txt", # cam007
+        # "Test-31-MTSC-predictions_camera-2_2025-01-03_18-55-09.txt", # cam008
+        # "Test-31-MTSC-predictions_camera-3_2024-12-17_18-27-51.txt", # cam009
     ]
 _C.METRICS.MIN_IOU = 0.30
 _C.METRICS.IGNORE_FP = True
@@ -211,29 +215,28 @@ _C.METRICS.DROP_SINGLE_CAM_TRACKS = True
 # ============================================================================================= #
 #                                    PIPELINE CONFIGURATIONS                                    #
 # ============================================================================================= #
-_C.MISC.TEST_NAME                       = 'Test-34'                                                             # Name of the test
-_C.TRACKING.VIDEO_PATH                  = './data/AICity22_Track1_MTMC_Tracking/validation/S02/c006/vdo.avi'    # Path to the video file or folder containing the video frames
+_C.MISC.TEST_NAME                       = 'Test-2'                                                              # Name of the test
+_C.TRACKING.VIDEO_PATH                  = './data/AICity22_Track1_MTMC_Tracking/validation/S02/c006/vdo.avi'    # Path to the video file or folder containing the video frames => ONLY FOR TESTING MTMC TRACKING. FOR PIPELINE REFER TO CONFIGS/cameras_*.yml files!
+_C.TRACKING.ROI_MASK_PATH               = './data/AICity22_Track1_MTMC_Tracking/validation/S02/c006/roi.jpg'    # Path to the ROI mask. Leave empty for creating a new one. USE_ROI_MASK must be True. | ONLY FOR TESTING MTMC TRACKING. FOR PIPELINE REFER TO CONFIGS/cameras_*.yml files!
 _C.TRACKING.USE_ROI_MASK                = True                                                                  # If True, the pipeline will use a ROI mask to track the vehicles
-_C.TRACKING.ROI_MASK_PATH               = './data/AICity22_Track1_MTMC_Tracking/validation/S02/c006/roi.jpg'    # Path to the ROI mask. Leave empty for creating a new one. USE_ROI_MASK must be True.
-_C.MISC.TARGET_PATH                     = ('./target/Target_2.png', 1)                                          # Path to the target file (PNG, Camera ID)
-_C.MISC.TARGET_COLOR                    = ['']                                                                  # Target colors for the Re-ID filtering process | [''] / ['red'] / ['blue'] / ['red', 'blue'] / etc
+_C.MISC.TARGET_PATH                     = ('./target/Target2_CAM1.png', 1)                                      # Path to the target file (Image Path, Camera ID)
+_C.MISC.TARGET_COLOR                    = ['red', 'orange']                                                     # Target colors for the Re-ID filtering process | [''] / ['red'] / ['blue'] / ['red', 'blue'] / etc
 _C.DB.USE_DB                            = True                                                                  # If True, the pipeline will insert the data into the database
-_C.DB.CLEAN_DB                          = True                                                                  # If True, the database will be cleaned before inserting new data
+_C.DB.CLEAN_DB                          = False                                                                 # If True, the database will be cleaned before inserting new data
 _C.MISC.USE_FILTERS                     = False                                                                 # If True, the pipeline will use filters to remove unwanted vehicles (color, stationary and incomplete)
 _C.TRACKING.SAMPLE_FRAMES               = False                                                                 # If True, the pipeline will sample maximum 50 frames to reduce the number of frames stored
-_C.TRACKING.DELETE_MIN_FRAMES           = True                                                                  # If True, the pipeline will delete the frames after the tracking process
-_C.MISC.RUN_UNIFICATION                 = True                                                                  # If True, the pipeline will ONLY run the unification process of the database
+_C.TRACKING.DELETE_MIN_FRAMES           = True                                                                  # If True, the pipeline will delete the trajectories which have less than 5 frames
+_C.MISC.RUN_UNIFICATION                 = True                                                                  # If True, the pipeline will run the unification process of the database
 _C.MISC.RUN_PIPELINE                    = True                                                                  # If True, the pipeline will run the full process of tracking, Re-ID and DB insertion
-_C.MTMC.SHOW_MTMC_IMAGES                = False                                                                 # If True, the pipeline will show the MTMC results in terms of plotting
+_C.MTMC.SHOW_MTMC_IMAGES                = True                                                                  # If True, the pipeline will show the MTMC results (in a plot)
 _C.MISC.EVALUATE_METRICS                = True                                                                  # If True, the pipeline will run the MTMC metrics
-_C.MISC.RUN_TARGET_SEARCH               = False                                                                 # If True, the pipeline will run the Target Search process
+_C.MISC.RUN_TARGET_SEARCH               = False                                                                 # If True, the pipeline will run the Target Search process (indicated by the target file in TARGET_PATH)
 _C.MTMC.USE_PICKLE                      = True                                                                  # If True, the pipeline will use the pickle file to load the MTMC/MTSC data
-_C.MTMC.PICKLE_GLOBAL_PATH              = './tracking/pickle_trajectories'                                      # Path to the pickle file containing the MTMC/MTSC data
+_C.MTMC.PICKLE_GLOBAL_PATH              = './tracking/pickle_trajectories'                                      # Path to the pickle file containing the MTMC/MTSC data. Directory will be PICKLE_GLOBAL_PATH + TEST_NAME
 
 # Similarity Algorithm and Methods
-_C.REID.TEST.SIMILARITY_ALGORITHM       = "cosine"              # "euclidean"  / "cosine"
 _C.REID.TEST.UNIFICATION_METHOD         = "area_avg"            # "mean" / "area_avg" / "individual"
 _C.REID.TEST.SIMILARITY_METHOD          = "area_avg"            # "mean" / "area_avg"
-_C.REID.TEST.SIMILARITY_THRESHOLD       = 0.50                  # Threshold for the similarity score
+_C.REID.TEST.SIMILARITY_THRESHOLD       = 0.50                  # Threshold for the similarity score. Below this value, potential merging is not considered.
 _C.REID.TEST.LINKAGE_METHOD             = "mean_feature"        # "mean_feature" / "average" / "single" / "complete"
 _C.MTMC.TARGET_SEARCH_METHOD            = "cameralink_search"   # "cameralink_search" / "multitrack_search" / "singletrack_search"

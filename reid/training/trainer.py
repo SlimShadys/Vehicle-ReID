@@ -36,7 +36,6 @@ class Trainer:
                                         Transformations
                                     ]
                         ],
-        #dataloaders,
         val_interval: int,
         loss_fn: LossBuilder,
         configs,
@@ -55,8 +54,8 @@ class Trainer:
         # Load the configurations from ReID Configurations
         self.augmentation_configs = self.reid_configs.AUGMENTATION
         self.loss_configs = self.reid_configs.LOSS
-        self.train_configs = self.reid_configs.TRAIN
-        self.val_configs = self.reid_configs.VAL
+        self.train_configs = self.reid_configs.TRAINING
+        self.val_configs = self.reid_configs.VALIDATION
         self.test_configs = self.reid_configs.TEST
         self.output_dir = self.reid_configs.OUTPUT_DIR
 
@@ -342,9 +341,10 @@ class Trainer:
                     embeddings = torch.cat(outputs)
                     pred_ids = torch.cat(pred_ids)
 
-                # Loss
-                ID_loss, metric_loss = self.loss_fn.forward(embeddings, pred_ids, car_id, normalize=False, use_rptm=False)
-
+                # Loss calculation
+                ID_loss, metric_loss = self.loss_fn.forward(embeddings, pred_ids, car_id, use_rptm=False)
+    
+            # Calculate the total loss (ID + Metric)
             loss = ID_loss + metric_loss
 
             # Accuracy

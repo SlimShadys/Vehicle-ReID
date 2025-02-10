@@ -1,27 +1,30 @@
 import numpy as np
 import torch
 import torch.nn as nn
+
 from pytorch_metric_learning import distances as py_distances
 from pytorch_metric_learning import losses as py_losses
 from pytorch_metric_learning import miners as py_miners
 
+from reid.losses.multipos_con_loss import MultiPosConLoss
 from reid.losses.supcon_loss import SupConLoss
 from reid.losses.triplet_loss import TripletLoss, TripletLossRPTM
 
 class LossBuilder(nn.Module):
-    def __init__(self, loss_type="TripletLoss", alpha=0.9, k=10, margin=0.3, label_smoothing=0.1, apply_MALW=False, batch_size=20, use_amp=False) -> torch.nn.Module:
+    def __init__(self, loss_type="TripletLoss", alpha=0.9, k=10, margin=0.3, label_smoothing=0.1, apply_MALW=False, batch_size=20, use_amp=False, use_glamor_training=False, device="cuda") -> torch.nn.Module:
         super(LossBuilder, self).__init__()
 
-        self.iteration = 0
-        self.margin = margin                    # Margin for contrastive loss
-        self.label_smoothing = label_smoothing  # Label smoothing factor
-        self.apply_MALW = apply_MALW            # Apply MALW algorithm
-        self.loss_type = loss_type              # Loss type (TripletLoss, TripletLossRPTM, SupConLoss, SupConLoss_Pytorch, TripletMarginLoss_Pytorch)
-        self.batch_size = batch_size            # Batch size
-        self.use_amp = use_amp                  # Use Automatic Mixed Precision
+        self.margin = margin                        # Margin for contrastive loss
+        self.label_smoothing = label_smoothing      # Label smoothing factor
+        self.apply_MALW = apply_MALW                # Apply MALW algorithm
+        self.loss_type = loss_type                  # Loss type (TripletLoss, TripletLossRPTM, SupConLoss, SupConLoss_Pytorch, TripletMarginLoss_Pytorch, MultiPosConLoss)
+        self.batch_size = batch_size                # Batch size
+        self.use_amp = use_amp                      # Use Automatic Mixed Precision
+        self.use_glamor_training = use_glamor_training  # Use Glamor-style Training
 
         ## ============ ID Loss ============ ##
         self.cross_entropy = nn.CrossEntropyLoss(label_smoothing=label_smoothing)  # Cross Entropy Loss
+        if self.use_glamor_training: self.layer_norm = nn.LayerNorm(2048, device=device)  # Layer Normalization
 
         ## =========== Metric Loss =========== ##
         if self.loss_type == "TripletLoss":  # Triplet Loss
@@ -38,6 +41,8 @@ class LossBuilder(nn.Module):
             self.distance = py_distances.LpDistance()
             self.miner = py_miners.BatchHardMiner(distance=self.distance)
             self.triplet_loss = py_losses.TripletMarginLoss(margin=self.margin)
+        elif self.loss_type == "MultiPosConLoss":  # Multi-Positive Contrastive Loss
+            self.triplet_loss = MultiPosConLoss(temperature=0.1, device=device)
         else:
             raise ValueError("Invalid loss type. Choose between 'TripletLoss', 'SupConLoss', 'SupConLoss_Pytorch' or 'TripletMarginLoss_Pytorch'")
 
@@ -56,7 +61,7 @@ class LossBuilder(nn.Module):
     # Paper: https://arxiv.org/pdf/2104.10850
     # Github: https://github.com/cybercore-co-ltd/track2_aicity_2021/blob/master/lib/layers/build.py#L42-L70
     # ================================================
-    def forward(self, embeddings: torch.Tensor, pred_ids: torch.Tensor, target_ids: torch.Tensor, normalize: bool = False, use_rptm: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, embeddings: torch.Tensor, pred_ids: torch.Tensor, target_ids: torch.Tensor, use_rptm: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
         # If we are using RPTM, we only take the first (batch_size) elements
         if use_rptm:
             pred_ids = pred_ids[0:self.batch_size]
@@ -65,7 +70,11 @@ class LossBuilder(nn.Module):
             target_ids_ce = target_ids
 
         # == Calculate the ID Loss (CrossEntropy)
-        ID_loss = self.cross_entropy(pred_ids, target_ids_ce)
+        if (self.use_glamor_training):
+            embeddings_normalized = self.layer_norm(embeddings)
+            ID_loss = self.cross_entropy(embeddings_normalized, target_ids_ce)
+        else:
+            ID_loss = self.cross_entropy(pred_ids, target_ids_ce)
 
         # == Calculate the Metric Loss (Triplet Loss)
         if self.loss_type == "SupConLoss_Pytorch" or self.loss_type == "TripletMarginLoss_Pytorch":
@@ -73,16 +82,16 @@ class LossBuilder(nn.Module):
             metric_loss = self.triplet_loss(embeddings, target_ids, self.miner(embeddings, target_ids)).mean()
         elif self.loss_type == "SupConLoss":
             metric_loss = self.triplet_loss(embeddings, target_ids)
-        elif self.loss_type == "TripletLoss" or self.loss_type == "TripletLossRPTM":
+        elif self.loss_type == "TripletLoss" or self.loss_type == "TripletLossRPTM" or self.loss_type == "MultiPosConLoss":
             metric_loss, _, _ = self.triplet_loss(embeddings, target_ids)
         else:
             raise ValueError("Invalid loss type. Choose between 'TripletLoss', 'TripletLossRPTM', 'SupConLoss', 'SupConLoss_Pytorch' or 'TripletMarginLoss_Pytorch'")
 
-        # Normalize embeddings for the Metric Loss
-        if normalize:
-            embeddings = nn.functional.normalize(embeddings, p=2, dim=1)
-
         if self.apply_MALW:
+            # Calculate the weighted sum of losses
+            ID_loss = self.ratio_ID * ID_loss
+            metric_loss = self.ratio_metric * metric_loss
+            
             # Apply MALW algorithm
             self.ID_losses.append(ID_loss.detach().cpu())
             self.metric_losses.append(metric_loss.detach().cpu())
@@ -92,20 +101,14 @@ class LossBuilder(nn.Module):
                 ID_std = np.array(self.ID_losses).std()
                 metric_std = np.array(self.metric_losses).std()
 
-                if ID_std > metric_std:
-                    self.ratio_ID = (self.alpha * self.ratio_ID) + ((1 - (ID_std - metric_std) / ID_std) * 0.1)
-
                 self.ID_losses = []
                 self.metric_losses = []
+
+                if ID_std > metric_std:
+                    new_ratio = (1 - (ID_std - metric_std) / ID_std)
+                    self.ratio_ID = (self.alpha * self.ratio_ID) + new_ratio
             else:
                 pass  # Keep the previous ratio
-
-            # Calculate the weighted sum of losses
-            ID_loss = self.ratio_ID * ID_loss
-            metric_loss = self.ratio_metric * metric_loss
-
-        self.iteration += 1
-
         return ID_loss, metric_loss
 
     def get_weights(self):

@@ -20,4 +20,4 @@ MTMC:
     info: './data/AICity22_Track1_MTMC_Tracking/validation/S02/c009/c009_info.json'
     gt: './data/AICity22_Track1_MTMC_Tracking/validation/S02/c009/gt/gt.txt'
 layout:
-  path: './data/AICity22_Track1_MTMC_Tracking/validation/S02/s02_camera_layout.txt'
+  path: './configs/layouts/s02_camera_layout.txt'

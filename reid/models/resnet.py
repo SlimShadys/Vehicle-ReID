@@ -113,6 +113,7 @@ class ResNet_IBN(nn.Module):
                  use_gem: str = False,
                  use_stride: str = False,
                  use_bottleneck: str = False,
+                 use_group_norm: str = False,
                  padding_mode = 'centered',
                  pretrained: Tuple[bool, str] = (False, None)):
         super(ResNet_IBN, self).__init__()
@@ -123,12 +124,13 @@ class ResNet_IBN(nn.Module):
         self.use_gem = use_gem
         self.use_stride = use_stride
         self.use_bottleneck = use_bottleneck
+        self.use_group_norm = use_group_norm
         self.pretrained, self.url = pretrained
 
         self.padding_mode = padding_mode
 
         self.conv1 = nn.Conv2d(3, self.scale, kernel_size=7, stride=2, padding=3, bias=False)
-        self.bn1 = nn.BatchNorm2d(self.scale)
+        self.bn1 = nn.GroupNorm(num_groups=16, num_channels=self.scale) if use_group_norm else nn.BatchNorm2d(self.scale)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         
@@ -147,7 +149,7 @@ class ResNet_IBN(nn.Module):
         if self.use_bottleneck:
             # Bottleneck layer based on the padding mode
             if self.padding_mode == 'centered':
-                self.bottleneck = nn.BatchNorm1d(self.feature_dim)
+                self.bottleneck = nn.GroupNorm(num_groups=16, num_channels=self.feature_dim) if use_group_norm else nn.BatchNorm1d(self.feature_dim)
             else: # 'aspect_ratio'
                 self.bottleneck = nn.GroupNorm(num_groups=1, num_channels=self.feature_dim)
             self.bottleneck.bias.requires_grad_(False)
@@ -160,15 +162,12 @@ class ResNet_IBN(nn.Module):
             if isinstance(m, nn.Conv2d):
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
                 m.weight.data.normal_(0, math.sqrt(2. / n))
-            elif isinstance(m, nn.BatchNorm2d):
-                m.weight.data.fill_(1)
-                m.bias.data.zero_()
-            elif isinstance(m, nn.InstanceNorm2d):
+            elif isinstance(m, nn.BatchNorm2d) or isinstance(m, nn.GroupNorm) or isinstance(m, nn.InstanceNorm2d):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
 
         # Load pretrained weights if specified
-        if self.pretrained: init_pretrained_weights(self, self.url)       
+        if self.pretrained: init_pretrained_weights(self, self.url)
 
     def _make_layer(self, block: nn.Module, planes: int, blocks: int, stride: int = 1):
         downsample = None
@@ -178,7 +177,7 @@ class ResNet_IBN(nn.Module):
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
                 nn.Conv2d(self.inplanes, planes * block.expansion, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(planes * block.expansion),
+                nn.GroupNorm(num_groups=16, num_channels=planes * block.expansion) if self.use_group_norm else nn.BatchNorm2d(planes * block.expansion)
             )
    
         layers.append(block(self.inplanes, planes, ibn, stride, downsample))
@@ -220,7 +219,8 @@ class ResNet_IBN(nn.Module):
         return nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor, training: bool = False):   
-        x = self.conv1(x)
+        # x starts as:x = [batch_size, 3, h, w]
+        x = self.conv1(x)           # [batch_size, 64, h, w]
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)         # [batch_size, 64, 85, 85]

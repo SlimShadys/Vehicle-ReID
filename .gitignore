@@ -6,6 +6,7 @@ gms/*
 
 # Ignore results for now
 reid/results/*
+tracking/pickle_trajectories/*
 
 # Ignore tracking example videos, tracking models and YOLO models
 tracking/video/*
@@ -28,6 +29,7 @@ reid/losses/__pycache__/*
 reid/models/__pycache__/*
 reid/results/__pycache__/*
 reid/training/__pycache__/*
+target/__pycache__/*
 tracking/__pycache__/*
 tracking/car-color-classifier/__pycache__/*
 

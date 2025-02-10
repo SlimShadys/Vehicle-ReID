@@ -382,7 +382,6 @@ class RandomIdentitySampler(Sampler):
         for index, (_, _, pid, _, _, _, _, _) in enumerate(self.data_source):
             self.index_dic[pid].append(index)
         self.pids = list(self.index_dic.keys())
-        self.num_identities = len(self.pids)  # Define num_identities here
 
         # estimate number of examples in an epoch
         self.length = 0
@@ -501,7 +500,7 @@ class BalancedIdentitySampler(Sampler):
 
             for kid in identities:
                 i = np.random.choice(self.pid_index[self.pids[kid]])
-                _, i_pid, i_cam, _, _, _, _ = self.data_source[i]
+                _, _, i_pid, i_cam, _, _, _, _ = self.data_source[i]
                 batch_indices.append(i)
                 pid_i = self.index_pid[i]
                 cams = self.pid_cam[pid_i]

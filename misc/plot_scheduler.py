@@ -32,6 +32,10 @@ class WarmupDecayLR(_LRScheduler):
         else:
             raise ValueError(f"Unknown decay method: {self.decay_method}")
 
+    # This linear decay method is the same as the one in the PyTorch implementation.
+    # The only difference is that we added the `min_lr` parameter to control the minimum learning rate.
+    # Plus, it also benefits from warmup.
+    # If you want to not have a warmup phase and only use linear decay, you can use the PyTorch implementation (use_warmup=False in config.yml).
     def _get_linear_lr(self, base_lr):
         return max(base_lr * (self.gamma ** len([m for m in self.milestones if m <= self.last_epoch])), self.min_lr)
 
@@ -74,12 +78,15 @@ nn.init.normal_(model.weight, mean=0, std=0.01)
 epochs = 160
 
 # Set up optimizers
+nowarmup_optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=0.0005)
 linear_optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=0.0005)
 smooth_optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=0.0005)
 cosine_optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=0.0005)
 multistep_optimizer = optim.SGD(model.parameters(), lr=1.0e-3, weight_decay=0.0005, momentum=0.9, dampening=0.0, nesterov=True)
 
 # Create scheduler
+nowarmup_scheduler = optim.lr_scheduler.MultiStepLR(nowarmup_optimizer, milestones=[20, 30, 45, 60, 75, 90, 105, 120, 135, 150], gamma=0.6)
+
 linear_scheduler = WarmupDecayLR(linear_optimizer,
                                  milestones=[20, 30, 45, 60, 75,
                                              90, 105, 120, 135, 150, 160],
@@ -96,11 +103,11 @@ smooth_scheduler = WarmupDecayLR(smooth_optimizer,
                                  min_lr=1.0e-6,)
 
 cosine_scheduler = WarmupDecayLR(cosine_optimizer,
-                                 milestones=[20, 30, 45, 60, 75, 90,
-                                             105, 120, 135, 150, 160, 180],
+                                 milestones=[20, 30, 45, 60, 75,
+                                             90, 105, 120, 135, 150, 160],
                                  warmup_epochs=10,
                                  gamma=0.6,
-                                 cosine_power=0.35,
+                                 cosine_power=1.00,
                                  decay_method='cosine',
                                  min_lr=1.0e-6,)
 
@@ -116,17 +123,20 @@ linear_learning_rates = []
 smooth_learning_rates = []
 cosine_learning_rates = []
 multistep_learning_rates = []
+nowarmup_learning_rates = []
 
 for ep in tqdm(range(epochs), total=epochs, desc='Collecting Learning Rates'):
     linear_learning_rates.append(linear_scheduler.optimizer.param_groups[0]['lr'])
     smooth_learning_rates.append(smooth_scheduler.optimizer.param_groups[0]['lr'])
     cosine_learning_rates.append(cosine_scheduler.optimizer.param_groups[0]['lr'])
     multistep_learning_rates.append(multistep_scheduler.optimizer.param_groups[0]['lr'])
+    nowarmup_learning_rates.append(nowarmup_scheduler.optimizer.param_groups[0]['lr'])
 
     linear_scheduler.step()
     smooth_scheduler.step()
     cosine_scheduler.step()
     multistep_scheduler.step()
+    nowarmup_scheduler.step()
 
 # Plot the learning rates
 plt.figure(figsize=(12, 6))
@@ -134,6 +144,7 @@ plt.plot(range(epochs), linear_learning_rates, label='WarmupDecayLR-Linear', col
 plt.plot(range(epochs), smooth_learning_rates, label='WarmupDecayLR-Smooth', color='blue')
 plt.plot(range(epochs), cosine_learning_rates, label='WarmupDecayLR-Cosine', color='purple')
 plt.plot(range(epochs), multistep_learning_rates, label='MultiStepLR', color='green')
+plt.plot(range(epochs), nowarmup_learning_rates, label='No Warmup', color='red', linestyle='--')
 plt.title('Learning Rate Schedule')
 plt.xlabel('Epochs')
 plt.ylabel('Learning Rate')

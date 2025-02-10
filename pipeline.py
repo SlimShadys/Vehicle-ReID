@@ -260,7 +260,8 @@ def load_models_and_transformations(device, cfg):
         model_configs=cfg.REID.COLOR_MODEL,
         device=device
     ).move_to(device)
-    
+    print(f"Successfully loaded {cfg.REID.COLOR_MODEL.NAME} color model from {cfg.REID.COLOR_MODEL.NAME}!")
+
     # Load Transformations
     transforms = Transformations(dataset=None, configs=cfg.REID.AUGMENTATION)
     return yolo_model, reid_model, car_classifier, transforms
@@ -301,8 +302,7 @@ def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data,
     reid_DB = db if USE_DB else None
 
     # Get the similarity method to use
-    similarity_algorithm    = reid_cfg.TEST.SIMILARITY_ALGORITHM    # 'cosine' / 'euclidean'
-    unification_method      = reid_cfg.TEST.UNIFICATION_METHOD      # 'mean' / 'max'
+    unification_method = reid_cfg.TEST.UNIFICATION_METHOD # "mean" / "area_avg" / "individual"
 
     # If GT is available, we must run MOTA metrics
     cfg_file.TRACKING.GT = camera_data.get('gt', None)
@@ -411,6 +411,10 @@ def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data,
                 mask = cv2.imread(roi_mask_path, 0)  # Grayscale mask
             else:
                 # We need to extract a single frame from the video to create the mask
+                reader_frame = iio.imopen(input_path, io_mode='r', plugin='pyav').iter()
+                frame = next(reader)
+                reader_frame.close()
+                    
                 mask = create_mask(frame, input_path)
 
             mask = cv2.resize(mask, (FRAME_WIDTH, FRAME_HEIGHT))
@@ -764,23 +768,20 @@ def run_mtsc(yolo_model, model, car_classifier, transforms, device, camera_data,
         logger.info("===============================================")
 
     if misc_cfg.RUN_UNIFICATION:
-
-        # =============== UNIFY DIFFERENT IDs BOUNDING BOXES FROM SAME CAMERA ===============
+        # =============== UNIFY DIFFERENT IDs BOUNDING BOXES FROM SAME CAMERA ===============e
         # After the pipeline is done, we must refine the BBoxes to be the same if:
         # 
         logger.info("Running unification across SINGLE camera...")
 
         # max_similarity_per_vehicle is a list of tuples containing the vehicle ID, the most similar vehicle ID, and the similarity
-        max_similarity_per_vehicle = get_max_similarity_per_vehicle(reid_DB, reid_cfg, camera_data, device,
-                                                                    similarity_algorithm, unification_method)
-
-        # If max_similarity_per_vehicle is empty, it means that no similar vehicles were detected across cameras
-        if not max_similarity_per_vehicle:
-            return
+        max_similarity_per_vehicle = get_max_similarity_per_vehicle(reid_DB, reid_cfg, camera_data, device, unification_method)
 
         # Check if any vehicle similarity exceeds the threshold
-        if not any(similarity >= similarity_threshold for _, _, similarity in max_similarity_per_vehicle):
+        if len(max_similarity_per_vehicle) == 0:
             logger.warning("No similar vehicles detected across cameras. Skipping unification.")
+            
+        if not any(similarity >= similarity_threshold for _, _, similarity in max_similarity_per_vehicle):
+            logger.warning("Similar vehicles are present, but none exceed the similarity threshold. Skipping unification.")
         else:
             logger.info("Similar vehicles detected across cameras. Starting unification...")
 
